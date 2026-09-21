@@ -2,11 +2,15 @@ import { Hono } from 'hono';
 import { Env } from './types';
 import { deviceRouter } from './device';
 import { proxyRouter } from './proxy';
+import { authRouter } from './auth';
+import { cabinetRouter } from './cabinet';
 
 const app = new Hono<{ Bindings: Env }>();
 
 // Подключение подмодулей маршрутизации
+app.route('/auth', authRouter);
 app.route('/api/v1/device', deviceRouter);
+app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 
 // Проверка статуса сервиса
