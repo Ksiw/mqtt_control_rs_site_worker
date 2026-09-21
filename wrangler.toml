@@ -1,0 +1,18 @@
+name = "mqtt-control-rs-hub"
+main = "src/index.ts"
+compatibility_date = "2026-04-01"
+
+# База данных Cloudflare D1
+[[d1_databases]]
+binding = "DB"
+database_name = "mqtt_control_rs_hub_db"
+database_id = "local-dev-db-id"
+
+# Фоновый планировщик очистки зависших оффлайн-узлов (каждую минуту)
+[triggers]
+crons = ["* * * * *"]
+
+# Переменные окружения (секреты добавляются через wrangler secret put)
+[vars]
+ENVIRONMENT = "production"
+HUB_DOMAIN = "https://mqtt-control-rs.pages.dev"
