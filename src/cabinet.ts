@@ -191,13 +191,33 @@ cabinetRouter.get('/', async (c) => {
                     </div>
                     <div class="dash-name">${d.name}</div>
                   </div>
-                  <a href="/view/${d.org_slug}/${d.ws_slug}/${d.id}" target="_blank" class="btn-open">
-                    Открыть мнемосхему ↗
-                  </a>
+                    <div style="display:flex; gap:8px;">
+                      <a href="/view/${d.org_slug}/${d.ws_slug}/${d.id}" target="_blank" class="btn-open" style="flex:1;">
+                        Открыть мнемосхему ↗
+                      </a>
+                      <button onclick="showQr('/view/${d.org_slug}/${d.ws_slug}/${d.id}', '${d.name}')" class="btn-secondary" title="QR-код для смартфона">
+                        📱 QR
+                      </button>
+                    </div>
+                  </div>
                 </div>
               `).join('')}
             </div>
           `}
+        </div>
+
+        <!-- Модальное окно QR-кода -->
+        <div id="qrModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center;">
+          <div style="background:#181d28; border:1px solid #334155; border-radius:12px; padding:28px; text-align:center; max-width:360px; width:90%;">
+            <h3 id="qrTitle" style="color:#f8fafc; font-size:16px; margin-bottom:12px;">Мнемосхема</h3>
+            <p style="color:#94a3b8; font-size:13px; margin-bottom:18px;">Наведите камеру смартфона для быстрого входа:</p>
+            <div id="qrContainer" style="background:#fff; padding:12px; border-radius:8px; display:inline-block; margin-bottom:18px;">
+              <img id="qrImage" src="" alt="QR" style="display:block; width:200px; height:200px;">
+            </div>
+            <div>
+              <button onclick="closeQr()" class="btn-secondary" style="width:100%;">Закрыть</button>
+            </div>
+          </div>
         </div>
 
         <!-- Блок подключённых устройств -->
@@ -260,6 +280,18 @@ cabinetRouter.get('/', async (c) => {
           } else {
             alert('Ошибка создания: ' + (data.message || 'неизвестная ошибка'));
           }
+        }
+
+        function showQr(path, title) {
+          const fullUrl = window.location.origin + path;
+          document.getElementById('qrTitle').textContent = title;
+          // Генерация QR-кода через публичный безопасный API
+          document.getElementById('qrImage').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(fullUrl);
+          document.getElementById('qrModal').style.display = 'flex';
+        }
+
+        function closeQr() {
+          document.getElementById('qrModal').style.display = 'none';
         }
       </script>
     </body>
