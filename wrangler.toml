@@ -1,4 +1,4 @@
-name = "mqtt-control-rs-hub"
+name = "mqtt-control-rs-site-worker"
 main = "src/index.ts"
 compatibility_date = "2026-04-01"
 
@@ -6,7 +6,7 @@ compatibility_date = "2026-04-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mqtt_control_rs_hub_db"
-database_id = "local-dev-db-id"
+database_id = "6192d8b8-5431-4b49-afe8-ff188d8fa0e1"
 
 # Фоновый планировщик очистки зависших оффлайн-узлов (каждую минуту)
 [triggers]
