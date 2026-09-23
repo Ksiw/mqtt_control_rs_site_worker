@@ -83,12 +83,19 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     // Подписка и лимиты
     const sub = await c.env.DB.prepare(
       'SELECT * FROM subscriptions WHERE org_id = ?'
-    ).bind(currentOrg.id).first<{ plan_tier: string; max_devices: number }>();
+    ).bind(currentOrg.id).first<{ plan_tier: string; status: string; current_period_end: number; max_devices: number }>();
 
+    let isTrial = false;
+    let daysLeft = 0;
     if (sub) {
       planTier = sub.plan_tier || 'free';
       maxDevices = sub.max_devices || 1;
       maxMembers = planTier === 'pro' ? 15 : planTier === 'enterprise' ? 9999 : 5;
+      if (sub.status === 'trialing') {
+        isTrial = true;
+        const now = Math.floor(Date.now() / 1000);
+        daysLeft = Math.max(0, Math.ceil((sub.current_period_end - now) / 86400));
+      }
     }
 
     // Члены семьи и организации
@@ -130,11 +137,27 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       ).all();
       dashboards = dashRes.results || [];
     }
+
+    return c.html(renderCabinetHtml({
+      user,
+      currentOrg,
+      workspaces,
+      devices,
+      dashboards,
+      members,
+      pendingInvites,
+      planTier,
+      maxDevices,
+      maxMembers,
+      isOwner,
+      isTrial,
+      daysLeft
+    }));
   }
 
   return c.html(renderCabinetHtml({
     user,
-    currentOrg,
+    currentOrg: currentOrg || { id: '', name: '', slug: '', owner_user_id: user.id },
     workspaces,
     devices,
     dashboards,
@@ -143,7 +166,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     planTier,
     maxDevices,
     maxMembers,
-    isOwner
+    isOwner: true
   }));
 };
 
@@ -151,7 +174,7 @@ cabinetRouter.get('/', handleCabinet);
 cabinetRouter.get('/cabinet', handleCabinet);
 
 /**
- * API выпуска нового ключа устройства
+ * API выпуска нового ключа хоста
  * POST /api/v1/devices/create
  */
 cabinetRouter.post('/api/v1/devices/create', async (c) => {
@@ -170,14 +193,14 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     return c.json({ status: 'error', message: 'Не указаны обязательные поля' }, 400);
   }
 
-  // Проверяем лимит устройств для организации
+  // Проверяем организацию, подписку и лимит хостов
   const orgMember = await c.env.DB.prepare(`
-    SELECT o.id as org_id, s.plan_tier, s.max_devices
+    SELECT o.id as org_id, s.plan_tier, s.status, s.max_devices, s.trial_used
     FROM workspaces w
     JOIN organizations o ON w.org_id = o.id
     LEFT JOIN subscriptions s ON s.org_id = o.id
     WHERE w.id = ?
-  `).bind(workspace_id).first<{ org_id: string; plan_tier: string; max_devices: number }>();
+  `).bind(workspace_id).first<{ org_id: string; plan_tier: string; status: string; max_devices: number; trial_used: number }>();
 
   const maxDevices = orgMember?.max_devices ?? 1;
   const currentDevCount = await c.env.DB.prepare(`
@@ -186,17 +209,31 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     WHERE w.org_id = ?
   `).bind(orgMember?.org_id || '').first<{ count: number }>();
 
-  if ((currentDevCount?.count ?? 0) >= maxDevices) {
-    return c.json({
-      status: 'error',
-      message: `В бесплатном тарифе «Семья» доступно 1 устройство. Чтобы подключить дополнительный компьютер, необходим тариф Pro.`
-    }, 403);
+  const count = currentDevCount?.count ?? 0;
+  const now = Math.floor(Date.now() / 1000);
+
+  if (count >= maxDevices) {
+    if (orgMember?.plan_tier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0)) {
+      // Автоматически включаем 60 дней бесплатного Pro-триала
+      const trialEnd = now + (60 * 86400);
+      await c.env.DB.prepare(`
+        UPDATE subscriptions
+        SET plan_tier = 'pro', status = 'trialing', max_devices = 5, trial_used = 1, current_period_end = ?
+        WHERE org_id = ?
+      `).bind(trialEnd, orgMember.org_id).run();
+    } else {
+      return c.json({
+        status: 'error',
+        message: orgMember?.trial_used === 1
+          ? 'Пробный период Pro (60 дней) уже был использован. В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
+          : 'В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
+      }, 403);
+    }
   }
 
   const devId = `dev_${crypto.randomUUID().replace(/-/g, '').substring(0, 10)}`;
   const { prefix, fullKey } = generateDeviceKey();
   const keyHash = await sha256Hex(fullKey);
-  const now = Math.floor(Date.now() / 1000);
 
   await c.env.DB.prepare(`
     INSERT INTO devices (id, workspace_id, name, role, priority, key_hash, key_prefix, routing_mode, is_online, created_at)

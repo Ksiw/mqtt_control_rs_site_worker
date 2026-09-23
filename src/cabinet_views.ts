@@ -1,4 +1,5 @@
 import { Device, Organization, User, Workspace } from './types';
+import { renderCabinetScripts } from './cabinet_scripts';
 
 export function renderLoginHtml(): string {
   return `
@@ -50,14 +51,25 @@ interface CabinetViewProps {
   maxDevices: number;
   maxMembers: number;
   isOwner: boolean;
+  isTrial?: boolean;
+  daysLeft?: number;
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
-  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner } = props;
+  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isTrial, daysLeft } = props;
   const currentWsId = workspaces[0]?.id || '';
   const totalAccounts = members.length + pendingInvites.length;
-  const canAddDevice = devices.length < maxDevices;
+  const canAddDevice = devices.length < maxDevices && isOwner;
   const canInvite = totalAccounts < maxMembers && isOwner;
+
+  let tierBadge = `<span class="tier-badge">Тариф: Семья (бесплатный) · 1 хост · до 5 аккаунтов</span>`;
+  if (!isOwner) {
+    tierBadge = `<span class="tier-badge">Член семьи (Оператор)</span>`;
+  } else if (isTrial) {
+    tierBadge = `<span class="tier-badge" style="background:#2d1b06; border-color:#d97706; color:#fbbf24;">🔥 Тариф Pro (Пробный период: осталось ${daysLeft ?? 60} дн.) · до 5 хостов</span>`;
+  } else if (planTier === 'pro') {
+    tierBadge = `<span class="tier-badge" style="background:#1e3a5f; border-color:#0284c7; color:#38bdf8;">★ Тариф Pro (активен) · до 5 хостов</span>`;
+  }
 
   return `
     <!DOCTYPE html>
@@ -107,7 +119,6 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         .form-label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
         .form-input, .form-select { width: 100%; background: #0f1217; border: 1px solid #283141; color: #f8fafc; padding: 10px 14px; border-radius: 6px; font-size: 14px; outline: none; }
         .form-input:focus, .form-select:focus { border-color: #38bdf8; }
-        .form-input::placeholder { color: #475569; }
         
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
         .modal-box { background: #181d28; border: 1px solid #334155; border-radius: 12px; padding: 24px; max-width: 440px; width: 92%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
@@ -129,7 +140,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           <span style="color:#64748b; font-weight:400; font-size:14px;">/ Управление</span>
         </div>
         <div class="header-user">
-          <span class="tier-badge">Тариф: Семья (бесплатный) · 1 компьютер · до 5 аккаунтов</span>
+          ${tierBadge}
           <span class="user-email">${user.name || user.email}</span>
           <a href="/auth/logout" class="btn-logout">Выйти</a>
         </div>
@@ -145,7 +156,9 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           ${dashboards.length === 0 ? `
             <div class="empty-state">
               Пока нет доступных дашбордов.<br>
-              Чтобы добавить дашборды, создайте устройство в блоке ниже и укажите его ключ в настройках программы.
+              ${isOwner 
+                ? 'Чтобы добавить дашборды, подключите хост-программу в блоке ниже.' 
+                : 'Владелец пространства пока не включил синхронизацию дашбордов.'}
             </div>
           ` : `
             <div class="grid">
@@ -172,50 +185,52 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           `}
         </div>
 
-        <!-- Блок Устройства -->
-        <div class="section-title">
-          <span>Устройства (${devices.length} из ${maxDevices})</span>
-          ${canAddDevice ? `
-            <button class="btn-secondary" onclick="openAddDeviceModal('${currentWsId}')">+ Добавить устройство</button>
-          ` : `
-            <span style="font-size:12px; color:#94a3b8;">Лимит бесплатной версии (1 устройство) заполнен</span>
-          `}
-        </div>
+        ${isOwner ? `
+          <!-- Блок Хост-программы (доступен только владельцу) -->
+          <div class="section-title">
+            <span>Хост-программы (серверы автоматики: ${devices.length} из ${maxDevices})</span>
+            ${canAddDevice ? `
+              <button class="btn-secondary" onclick="openAddDeviceModal('${currentWsId}')">+ Добавить хост</button>
+            ` : `
+              <span style="font-size:12px; color:#94a3b8;">Лимит слотов (${maxDevices}) заполнен</span>
+            `}
+          </div>
 
-        <div class="card" style="padding:0; overflow:hidden;">
-          ${devices.length === 0 ? `
-            <div class="empty-state">
-              Нет добавленных устройств. Нажмите «+ Добавить устройство», чтобы получить ключ для программы.
-            </div>
-          ` : `
-            <table>
-              <thead>
-                <tr>
-                  <th>Устройство</th>
-                  <th>Роль</th>
-                  <th>Статус</th>
-                  <th>Префикс ключа</th>
-                  <th>Версия</th>
-                </tr>
-              </thead>
-              <tbody>
-                ${devices.map(dev => `
+          <div class="card" style="padding:0; overflow:hidden;">
+            ${devices.length === 0 ? `
+              <div class="empty-state">
+                Нет подключённых хост-программ. В окне программы «Сервер» нажмите «Привязать через браузер» или используйте «+ Добавить хост».
+              </div>
+            ` : `
+              <table>
+                <thead>
                   <tr>
-                    <td style="font-weight:500;">${dev.name}</td>
-                    <td><span style="font-size:12px; color:#94a3b8; text-transform:uppercase;">${dev.role}</span></td>
-                    <td>
-                      ${dev.is_online === 1 
-                        ? '<span class="badge badge-online"><span class="dot"></span> Онлайн</span>' 
-                        : '<span class="badge badge-offline"><span class="dot"></span> Оффлайн</span>'}
-                    </td>
-                    <td><code>${dev.key_prefix}****</code></td>
-                    <td style="color:#64748b;">${dev.app_version || '—'}</td>
+                    <th>Хост-программа</th>
+                    <th>Роль</th>
+                    <th>Статус</th>
+                    <th>Префикс ключа</th>
+                    <th>Версия</th>
                   </tr>
-                `).join('')}
-              </tbody>
-            </table>
-          `}
-        </div>
+                </thead>
+                <tbody>
+                  ${devices.map(dev => `
+                    <tr>
+                      <td style="font-weight:500;">${dev.name}</td>
+                      <td><span style="font-size:12px; color:#94a3b8; text-transform:uppercase;">${dev.role}</span></td>
+                      <td>
+                        ${dev.is_online === 1 
+                          ? '<span class="badge badge-online"><span class="dot"></span> Онлайн</span>' 
+                          : '<span class="badge badge-offline"><span class="dot"></span> Оффлайн</span>'}
+                      </td>
+                      <td><code>${dev.key_prefix}****</code></td>
+                      <td style="color:#64748b;">${dev.app_version || '—'}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            `}
+          </div>
+        ` : ''}
 
         <!-- Блок Семейный доступ -->
         <div class="section-title">
@@ -290,40 +305,40 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
       </div>
 
-      <!-- Модальное окно создания устройства -->
+      <!-- Модальное окно создания хоста -->
       <div id="addDeviceModal" class="modal-overlay">
         <div class="modal-box">
-          <div class="modal-title">Новое устройство</div>
+          <div class="modal-title">Новая хост-программа</div>
           <form id="addDeviceForm" onsubmit="submitAddDevice(event)">
             <div class="form-group">
-              <label class="form-label" for="deviceNameInput">Название устройства</label>
-              <input id="deviceNameInput" class="form-input" type="text" placeholder="Рабочий компьютер" required autocomplete="off" />
+              <label class="form-label" for="deviceNameInput">Название хоста</label>
+              <input id="deviceNameInput" class="form-input" type="text" placeholder="Домашний сервер" required autocomplete="off" />
             </div>
             <div class="form-group">
-              <label class="form-label" for="deviceRoleSelect">Роль устройства</label>
+              <label class="form-label" for="deviceRoleSelect">Роль хоста</label>
               <select id="deviceRoleSelect" class="form-select">
-                <option value="primary">Основное (Primary)</option>
-                <option value="standby">Резервное (Standby)</option>
+                <option value="primary">Основной (Primary)</option>
+                <option value="standby">Резервный (Standby)</option>
               </select>
             </div>
             <div id="addDeviceError" style="color: #f87171; font-size: 13px; margin-bottom: 12px; display: none;"></div>
             <div class="modal-actions">
               <button type="button" onclick="closeAddDeviceModal()" class="btn-secondary">Отмена</button>
-              <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Добавить устройство</button>
+              <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Добавить хост</button>
             </div>
           </form>
         </div>
       </div>
 
-      <!-- Модальное окно подтверждения связки устройства (Pairing) -->
+      <!-- Модальное окно подтверждения связки хоста (Pairing) -->
       <div id="pairApproveModal" class="modal-overlay">
         <div class="modal-box" style="max-width: 480px;">
-          <div class="modal-title" style="color:#38bdf8;">Запрос на привязку устройства</div>
+          <div class="modal-title" style="color:#38bdf8;">Запрос на привязку хоста</div>
           <p style="font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 16px;">
-            Программа на вашем компьютере запрашивает связку с личным кабинетом.
+            Хост-программа на вашем компьютере запрашивает привязку к этому аккаунту.
           </p>
           <div style="background:#0f1217; border:1px solid #283141; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
-            <div><strong>Устройство:</strong> <span id="pairDeviceName">—</span></div>
+            <div><strong>Хост:</strong> <span id="pairDeviceName">—</span></div>
             <div style="margin-top:4px;"><strong>Платформа:</strong> <span id="pairOsInfo">—</span></div>
             <div style="margin-top:4px;"><strong>Код проверки:</strong> <span id="pairCodeDisplay" style="color:#38bdf8; font-weight:700;">—</span></div>
           </div>
@@ -338,7 +353,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
       <!-- Модальное окно с созданным ключом -->
       <div id="keySuccessModal" class="modal-overlay">
         <div class="modal-box" style="max-width: 480px;">
-          <div class="modal-title" style="color:#4ade80;">✓ Устройство добавлено</div>
+          <div class="modal-title" style="color:#4ade80;">✓ Хост добавлен</div>
           <p style="font-size: 13px; color: #94a3b8; text-align: left; line-height: 1.5;">
             Скопируйте секретный ключ и вставьте его в программе <strong>MQTT Control RS</strong> в окне «Сервер» → «Облачный хаб»:
           </p>
@@ -367,217 +382,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
       </div>
 
-      <script>
-        let currentWorkspaceId = '${currentWsId}';
-        let createdDeviceKey = '';
-        let activePairCode = '';
-
-        // Проверка URL на наличие запроса связки (?pair=...)
-        window.addEventListener('DOMContentLoaded', async () => {
-          const params = new URLSearchParams(window.location.search);
-          const pairCode = params.get('pair');
-          if (pairCode) {
-            activePairCode = pairCode;
-            try {
-              const res = await fetch('/api/v1/pair/info?code=' + encodeURIComponent(pairCode));
-              const data = await res.json();
-              if (data.status === 'ok') {
-                document.getElementById('pairDeviceName').textContent = data.device_name;
-                document.getElementById('pairOsInfo').textContent = data.os_info || 'ПК';
-                document.getElementById('pairCodeDisplay').textContent = pairCode;
-                document.getElementById('pairApproveModal').style.display = 'flex';
-              }
-            } catch (err) {}
-          }
-        });
-
-        async function confirmPairing() {
-          const btn = document.getElementById('pairApproveBtn');
-          const errDiv = document.getElementById('pairError');
-          btn.disabled = true;
-          btn.textContent = 'Привязка...';
-          errDiv.style.display = 'none';
-
-          try {
-            const res = await fetch('/api/v1/pair/approve', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ code: activePairCode })
-            });
-            const data = await res.json();
-            if (data.status === 'ok') {
-              alert(data.message || 'Устройство успешно привязано!');
-              window.location.href = '/cabinet';
-            } else {
-              errDiv.textContent = data.message || 'Ошибка подтверждения';
-              errDiv.style.display = 'block';
-              btn.disabled = false;
-              btn.textContent = 'Подтвердить привязку';
-            }
-          } catch (e) {
-            errDiv.textContent = 'Сетевая ошибка';
-            errDiv.style.display = 'block';
-            btn.disabled = false;
-            btn.textContent = 'Подтвердить привязку';
-          }
-        }
-
-        function closePairModal() {
-          document.getElementById('pairApproveModal').style.display = 'none';
-        }
-
-        function openAddDeviceModal(wsId) {
-          currentWorkspaceId = wsId;
-          document.getElementById('deviceNameInput').value = '';
-          document.getElementById('deviceRoleSelect').value = 'primary';
-          document.getElementById('addDeviceError').style.display = 'none';
-          document.getElementById('addDeviceModal').style.display = 'flex';
-          setTimeout(() => document.getElementById('deviceNameInput').focus(), 50);
-        }
-
-        function closeAddDeviceModal() {
-          document.getElementById('addDeviceModal').style.display = 'none';
-        }
-
-        async function submitAddDevice(e) {
-          e.preventDefault();
-          const nameInput = document.getElementById('deviceNameInput');
-          const roleSelect = document.getElementById('deviceRoleSelect');
-          const submitBtn = document.getElementById('addDeviceSubmitBtn');
-          const errDiv = document.getElementById('addDeviceError');
-
-          const name = nameInput.value.trim();
-          if (!name) return;
-
-          submitBtn.disabled = true;
-          submitBtn.textContent = 'Добавление...';
-          errDiv.style.display = 'none';
-
-          try {
-            const res = await fetch('/api/v1/devices/create', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ workspace_id: currentWorkspaceId, name: name, role: roleSelect.value })
-            });
-            const data = await res.json();
-            if (data.status === 'ok') {
-              closeAddDeviceModal();
-              createdDeviceKey = data.device_key;
-              document.getElementById('keyDisplayBox').textContent = createdDeviceKey;
-              document.getElementById('keySuccessModal').style.display = 'flex';
-            } else {
-              errDiv.textContent = data.message || 'Ошибка добавления устройства';
-              errDiv.style.display = 'block';
-            }
-          } catch (err) {
-            errDiv.textContent = 'Сетевая ошибка при добавлении устройства';
-            errDiv.style.display = 'block';
-          } finally {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Добавить устройство';
-          }
-        }
-
-        function openInviteModal() {
-          document.getElementById('inviteEmailInput').value = '';
-          document.getElementById('inviteError').style.display = 'none';
-          document.getElementById('inviteModal').style.display = 'flex';
-          setTimeout(() => document.getElementById('inviteEmailInput').focus(), 50);
-        }
-
-        function closeInviteModal() {
-          document.getElementById('inviteModal').style.display = 'none';
-        }
-
-        async function submitInvite(e) {
-          e.preventDefault();
-          const email = document.getElementById('inviteEmailInput').value.trim();
-          const btn = document.getElementById('inviteSubmitBtn');
-          const errDiv = document.getElementById('inviteError');
-          if (!email) return;
-
-          btn.disabled = true;
-          btn.textContent = 'Отправка...';
-          errDiv.style.display = 'none';
-
-          try {
-            const res = await fetch('/api/v1/family/invite', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email: email, role: 'operator' })
-            });
-            const data = await res.json();
-            if (data.status === 'ok') {
-              alert(data.message);
-              location.reload();
-            } else {
-              errDiv.textContent = data.message || 'Ошибка отправки приглашения';
-              errDiv.style.display = 'block';
-            }
-          } catch (err) {
-            errDiv.textContent = 'Сетевая ошибка';
-            errDiv.style.display = 'block';
-          } finally {
-            btn.disabled = false;
-            btn.textContent = 'Пригласить';
-          }
-        }
-
-        async function removeMember(userId) {
-          if (!confirm('Отозвать доступ у этого пользователя?')) return;
-          try {
-            const res = await fetch('/api/v1/family/remove', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ user_id: userId })
-            });
-            const data = await res.json();
-            if (data.status === 'ok') location.reload();
-            else alert(data.message || 'Ошибка');
-          } catch (e) { alert('Ошибка сети'); }
-        }
-
-        async function removeInvite(email) {
-          if (!confirm('Отменить приглашение для ' + email + '?')) return;
-          try {
-            const res = await fetch('/api/v1/family/remove', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ email: email })
-            });
-            const data = await res.json();
-            if (data.status === 'ok') location.reload();
-            else alert(data.message || 'Ошибка');
-          } catch (e) { alert('Ошибка сети'); }
-        }
-
-        async function copyCreatedKey() {
-          if (!createdDeviceKey) return;
-          try {
-            await navigator.clipboard.writeText(createdDeviceKey);
-            const btn = document.getElementById('copyKeyBtn');
-            btn.textContent = '✓ Скопировано!';
-            setTimeout(() => { btn.textContent = '📋 Скопировать ключ'; }, 2500);
-          } catch (err) {
-            const box = document.getElementById('keyDisplayBox');
-            const range = document.createRange();
-            range.selectNodeContents(box);
-            window.getSelection().removeAllRanges();
-            window.getSelection().addRange(range);
-          }
-        }
-
-        function showQr(path, title) {
-          const fullUrl = window.location.origin + path;
-          document.getElementById('qrTitle').textContent = title;
-          document.getElementById('qrImage').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(fullUrl);
-          document.getElementById('qrModal').style.display = 'flex';
-        }
-
-        function closeQr() {
-          document.getElementById('qrModal').style.display = 'none';
-        }
-      </script>
+      ${renderCabinetScripts(currentWsId)}
     </body>
     </html>
   `;
