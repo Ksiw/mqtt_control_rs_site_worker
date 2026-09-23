@@ -192,7 +192,7 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
           ${dashboards.length === 0 ? `
             <div class="empty-state">
               Пока нет доступных дашбордов.<br>
-              Подключите узел программы в блоке ниже, и дашборды появятся здесь автоматически.
+              Чтобы добавить дашборды, создайте устройство в блоке ниже и укажите его ключ в настройках программы.
             </div>
           ` : `
             <div class="grid">
@@ -234,26 +234,26 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
           </div>
         </div>
 
-        <!-- Модальное окно создания узла -->
+        <!-- Модальное окно создания устройства -->
         <div id="addDeviceModal" class="modal-overlay">
           <div class="modal-box">
-            <div class="modal-title">Новый узел</div>
+            <div class="modal-title">Новое устройство</div>
             <form id="addDeviceForm" onsubmit="submitAddDevice(event)">
               <div class="form-group">
-                <label class="form-label" for="deviceNameInput">Название узла</label>
-                <input id="deviceNameInput" class="form-input" type="text" placeholder="АРМ Диспетчера" required autocomplete="off" />
+                <label class="form-label" for="deviceNameInput">Название устройства</label>
+                <input id="deviceNameInput" class="form-input" type="text" placeholder="Рабочий компьютер" required autocomplete="off" />
               </div>
               <div class="form-group">
-                <label class="form-label" for="deviceRoleSelect">Роль узла</label>
+                <label class="form-label" for="deviceRoleSelect">Роль устройства</label>
                 <select id="deviceRoleSelect" class="form-select">
-                  <option value="primary">Основной (Primary)</option>
-                  <option value="standby">Резервный (Standby)</option>
+                  <option value="primary">Основное (Primary)</option>
+                  <option value="standby">Резервное (Standby)</option>
                 </select>
               </div>
               <div id="addDeviceError" style="color: #f87171; font-size: 13px; margin-bottom: 12px; display: none;"></div>
               <div class="modal-actions">
                 <button type="button" onclick="closeAddDeviceModal()" class="btn-secondary">Отмена</button>
-                <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Создать узел</button>
+                <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Добавить устройство</button>
               </div>
             </form>
           </div>
@@ -262,7 +262,7 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
         <!-- Модальное окно с созданным ключом -->
         <div id="keySuccessModal" class="modal-overlay">
           <div class="modal-box" style="max-width: 480px;">
-            <div class="modal-title" style="color:#4ade80;">✓ Узел создан</div>
+            <div class="modal-title" style="color:#4ade80;">✓ Устройство добавлено</div>
             <p style="font-size: 13px; color: #94a3b8; text-align: left; line-height: 1.5;">
               Скопируйте секретный ключ и вставьте его в программе <strong>MQTT Control RS</strong> в окне «Сервер» → «Облачный хаб»:
             </p>
@@ -279,20 +279,20 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
 
         <!-- Блок подключённых устройств -->
         <div class="section-title">
-          <span>Подключённые узлы (ПК диспетчера / Серверы)</span>
-          <button class="btn-secondary" onclick="openAddDeviceModal('${workspaces[0]?.id || ''}')">+ Добавить узел</button>
+          <span>Устройства</span>
+          <button class="btn-secondary" onclick="openAddDeviceModal('${workspaces[0]?.id || ''}')">+ Добавить устройство</button>
         </div>
 
         <div class="card" style="padding:0; overflow:hidden;">
           ${devices.length === 0 ? `
             <div class="empty-state">
-              Нет привязанных устройств. Нажмите «+ Добавить узел», чтобы получить ключ для программы.
+              Нет добавленных устройств. Нажмите «+ Добавить устройство», чтобы получить ключ для программы.
             </div>
           ` : `
             <table>
               <thead>
                 <tr>
-                  <th>Имя узла</th>
+                  <th>Устройство</th>
                   <th>Роль</th>
                   <th>Статус</th>
                   <th>Префикс ключа</th>
@@ -347,7 +347,7 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
           if (!name) return;
 
           submitBtn.disabled = true;
-          submitBtn.textContent = 'Создание...';
+          submitBtn.textContent = 'Добавление...';
           errDiv.style.display = 'none';
 
           try {
@@ -363,15 +363,15 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
               document.getElementById('keyDisplayBox').textContent = createdDeviceKey;
               document.getElementById('keySuccessModal').style.display = 'flex';
             } else {
-              errDiv.textContent = data.message || 'Ошибка создания узла';
+              errDiv.textContent = data.message || 'Ошибка добавления устройства';
               errDiv.style.display = 'block';
             }
           } catch (err) {
-            errDiv.textContent = 'Сетевая ошибка при создании узла';
+            errDiv.textContent = 'Сетевая ошибка при добавлении устройства';
             errDiv.style.display = 'block';
           } finally {
             submitBtn.disabled = false;
-            submitBtn.textContent = 'Создать узел';
+            submitBtn.textContent = 'Добавить устройство';
           }
         }
 
