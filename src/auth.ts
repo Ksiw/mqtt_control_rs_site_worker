@@ -15,7 +15,8 @@ authRouter.get('/google', (c) => {
   }
 
   // Определяем URL колбэка
-  const redirectUri = `${new URL(c.req.url).origin}/auth/callback`;
+  const origin = c.env.HUB_DOMAIN || `${new URL(c.req.url).origin}`;
+  const redirectUri = `${origin}/auth/callback`;
   const state = crypto.randomUUID();
 
   // Сохраняем state в cookie на 10 минут для защиты от CSRF
@@ -57,7 +58,8 @@ authRouter.get('/callback', async (c) => {
     return c.text('Ошибка конфигурации Google OAuth на сервере', 500);
   }
 
-  const redirectUri = `${new URL(c.req.url).origin}/auth/callback`;
+  const origin = c.env.HUB_DOMAIN || `${new URL(c.req.url).origin}`;
+  const redirectUri = `${origin}/auth/callback`;
 
   // 1. Обмен кода авторизации на токен доступа Google
   const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
@@ -164,7 +166,7 @@ authRouter.get('/callback', async (c) => {
   deleteCookie(c, 'oauth_state');
 
   // Перенаправляем в личный кабинет
-  return c.redirect('/');
+  return c.redirect('/cabinet');
 });
 
 /**
@@ -177,5 +179,5 @@ authRouter.get('/logout', async (c) => {
     await c.env.DB.prepare('DELETE FROM user_sessions WHERE token = ?').bind(sessionToken).run();
   }
   deleteCookie(c, 'session');
-  return c.redirect('/');
+  return c.redirect('/cabinet');
 });
