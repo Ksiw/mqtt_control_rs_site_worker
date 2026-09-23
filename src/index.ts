@@ -4,12 +4,16 @@ import { deviceRouter } from './device';
 import { proxyRouter } from './proxy';
 import { authRouter } from './auth';
 import { cabinetRouter } from './cabinet';
+import { familyRouter } from './family';
+import { pairRouter } from './pairing';
 
 const app = new Hono<{ Bindings: Env }>();
 
 // Подключение подмодулей маршрутизации
 app.route('/auth', authRouter);
 app.route('/api/v1/device', deviceRouter);
+app.route('/api/v1/family', familyRouter);
+app.route('/api/v1/pair', pairRouter);
 app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 

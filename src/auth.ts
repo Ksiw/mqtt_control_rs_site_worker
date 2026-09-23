@@ -125,7 +125,7 @@ authRouter.get('/callback', async (c) => {
 
       c.env.DB.prepare(`
         INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices, max_dashboards, current_period_end, created_at)
-        VALUES (?, ?, 'free', 'active', 2, 3, 5, ?, ?)
+        VALUES (?, ?, 'free', 'active', 1, 1, 10, ?, ?)
       `).bind(`sub_${crypto.randomUUID().substring(0, 8)}`, orgId, now + (365 * 86400), now),
 
       c.env.DB.prepare(`
@@ -143,6 +143,21 @@ authRouter.get('/callback', async (c) => {
     await c.env.DB.prepare(
       'UPDATE users SET last_login_at = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?'
     ).bind(now, profile.name || null, profile.picture || null, userId).run();
+  }
+
+  // Проверяем, есть ли для этого email приглашения в семью / организацию
+  const pendingInvites = await c.env.DB.prepare(
+    'SELECT * FROM invites WHERE lower(email) = lower(?)'
+  ).bind(profile.email).all<{ id: string; org_id: string; role: string }>();
+
+  if (pendingInvites.results && pendingInvites.results.length > 0) {
+    for (const inv of pendingInvites.results) {
+      await c.env.DB.prepare(`
+        INSERT OR IGNORE INTO organization_members (org_id, user_id, role, created_at)
+        VALUES (?, ?, ?, ?)
+      `).bind(inv.org_id, userId, inv.role || 'operator', now).run();
+      await c.env.DB.prepare('DELETE FROM invites WHERE id = ?').bind(inv.id).run();
+    }
   }
 
   // 4. Выпуск сессии пользователя (30 дней)
