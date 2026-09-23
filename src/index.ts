@@ -17,9 +17,11 @@ app.route('/api/v1/pair', pairRouter);
 app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 
+export const APP_VERSION = '1.1.0';
+
 // Проверка статуса сервиса
 app.get('/api/v1/health', (c) => {
-  return c.json({ status: 'ok', time: Math.floor(Date.now() / 1000) });
+  return c.json({ status: 'ok', version: APP_VERSION, time: Math.floor(Date.now() / 1000) });
 });
 
 // Экспорт обработчиков для Cloudflare Workers

@@ -1,6 +1,6 @@
 {
   "name": "site_worker",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cloud Hub & Reverse Proxy Worker for mqtt_control_rs",
   "main": "src/index.ts",
   "scripts": {

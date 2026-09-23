@@ -282,6 +282,10 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
             </tbody>
           </table>
         </div>
+
+        <div style="text-align:center; padding:20px 0 8px; font-size:12px; color:#475569;">
+          MQTT Control RS Cloud Hub · v1.1.0
+        </div>
       </div>
 
       <!-- Модальное окно приглашения члена семьи -->
