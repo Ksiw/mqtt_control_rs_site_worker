@@ -191,8 +191,8 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
         <div class="card">
           ${dashboards.length === 0 ? `
             <div class="empty-state">
-              Пока нет зарегистрированных экранов.<br>
-              Подключите экземпляр настольной программы <code>mqtt_control_rs</code> ниже, и экраны появятся здесь автоматически.
+              Пока нет доступных дашбордов.<br>
+              Подключите узел программы в блоке ниже, и дашборды появятся здесь автоматически.
             </div>
           ` : `
             <div class="grid">
@@ -264,7 +264,7 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
           <div class="modal-box" style="max-width: 480px;">
             <div class="modal-title" style="color:#4ade80;">✓ Узел создан</div>
             <p style="font-size: 13px; color: #94a3b8; text-align: left; line-height: 1.5;">
-              Скопируйте секретный ключ и вставьте его в программе <strong>mqtt_control_rs</strong> в окне «Сервер» → «Облачный хаб»:
+              Скопируйте секретный ключ и вставьте его в программе <strong>MQTT Control RS</strong> в окне «Сервер» → «Облачный хаб»:
             </p>
             <div id="keyDisplayBox" class="key-display"></div>
             <div style="font-size: 12px; color: #f59e0b; margin-bottom: 16px; text-align: left;">

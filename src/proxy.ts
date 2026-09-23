@@ -53,7 +53,7 @@ proxyRouter.all('/view/:org_slug/:ws_slug/:dash_id/*', async (c) => {
       <body>
         <div class="card">
           <h2>⚠️ Оборудование не на связи</h2>
-          <p>Экземпляр программы mqtt_control_rs для этого пространства сейчас оффлайн или туннель Cloudflare не запущен.</p>
+          <p>Узел программы MQTT Control RS сейчас не в сети или туннель связи не запущен.</p>
         </div>
       </body>
       </html>
