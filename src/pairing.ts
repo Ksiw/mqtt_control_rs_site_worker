@@ -141,12 +141,71 @@ pairRouter.get('/info', async (c) => {
     return c.json({ status: 'error', message: 'Код не найден или истёк' }, 404);
   }
 
+  // Данные об аккаунте текущего пользователя (если авторизован в браузере)
+  const user = await getCurrentUser(c);
+  let existingDevice: { id: string; name: string; is_online: boolean; last_seen: number | null } | null = null;
+  let hasLimitReached = false;
+  let transfersUsed = 0;
+  let canTransfer = true;
+  let canTrial = false;
+
+  if (user) {
+    const orgMember = await c.env.DB.prepare(`
+      SELECT o.id as org_id, s.plan_tier, s.max_devices, s.trial_used
+      FROM organization_members m
+      JOIN organizations o ON m.org_id = o.id
+      LEFT JOIN subscriptions s ON s.org_id = o.id
+      WHERE m.user_id = ?
+      LIMIT 1
+    `).bind(user.id).first<{ org_id: string; plan_tier: string; max_devices: number; trial_used: number }>();
+
+    if (orgMember) {
+      const maxDevs = orgMember.max_devices ?? 1;
+      const devices = await c.env.DB.prepare(`
+        SELECT d.id, d.name, d.is_online, d.last_heartbeat_at
+        FROM devices d
+        JOIN workspaces w ON d.workspace_id = w.id
+        WHERE w.org_id = ?
+      `).bind(orgMember.org_id).all<{ id: string; name: string; is_online: number; last_heartbeat_at: number | null }>();
+
+      const count = devices.results?.length ?? 0;
+      if (count >= maxDevs) {
+        hasLimitReached = true;
+        const firstDev = devices.results?.[0];
+        if (firstDev) {
+          existingDevice = {
+            id: firstDev.id,
+            name: firstDev.name,
+            is_online: firstDev.is_online === 1,
+            last_seen: firstDev.last_heartbeat_at
+          };
+        }
+
+        // Подсчет переносов за последние 30 дней (30 * 86400 сек)
+        const windowStart = now - (30 * 86400);
+        const trRow = await c.env.DB.prepare(`
+          SELECT COUNT(*) as count FROM host_transfers
+          WHERE org_id = ? AND transferred_at > ?
+        `).bind(orgMember.org_id, windowStart).first<{ count: number }>();
+
+        transfersUsed = trRow?.count ?? 0;
+        canTransfer = transfersUsed < 4;
+        canTrial = (orgMember.plan_tier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0));
+      }
+    }
+  }
+
   return c.json({
     status: 'ok',
     device_name: pairing.device_name,
     os_info: pairing.os_info,
     app_version: pairing.app_version,
-    pairing_status: pairing.status
+    pairing_status: pairing.status,
+    has_limit_reached: hasLimitReached,
+    existing_device: existingDevice,
+    transfers_used: transfersUsed,
+    can_transfer: canTransfer,
+    can_trial: canTrial
   });
 });
 
@@ -160,7 +219,11 @@ pairRouter.post('/approve', async (c) => {
     return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
   }
 
-  const { code } = await c.req.json() as { code?: string };
+  const { code, action } = await c.req.json() as {
+    code?: string;
+    action?: 'standard' | 'transfer' | 'trial';
+  };
+
   if (!code) {
     return c.json({ status: 'error', message: 'Код не указан' }, 400);
   }
@@ -208,7 +271,7 @@ pairRouter.post('/approve', async (c) => {
     return c.json({ status: 'error', message: 'Рабочее пространство не найдено' }, 404);
   }
 
-  // Повторная проверка machine_id: не зарегистрирован ли этот хост уже в другой организации
+  // Повторная проверка machine_id: не зарегистрирован ли этот хост в другой организации
   if (pairing.machine_id) {
     const doubleCheck = await c.env.DB.prepare(`
       SELECT d.id FROM devices d
@@ -225,21 +288,55 @@ pairRouter.post('/approve', async (c) => {
     }
   }
 
-  // Проверяем лимит хостов и авто-активацию 60 дней Pro Trial
   const currentDevCount = await c.env.DB.prepare(`
     SELECT COUNT(*) as count FROM devices d
     JOIN workspaces w ON d.workspace_id = w.id
     WHERE w.org_id = ?
   `).bind(orgMember.org_id).first<{ count: number }>();
 
-  const count = currentDevCount?.count ?? 0;
+  let count = currentDevCount?.count ?? 0;
   const maxDevs = orgMember.max_devices ?? 1;
 
-  let activatedTrialMessage = '';
+  let successMsg = `Хост «${pairing.device_name}» успешно привязан к аккаунту!`;
+  let oldDeviceIdToRecord: string | null = null;
 
   if (count >= maxDevs) {
-    if (orgMember.plan_tier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0)) {
-      // Автоматически включаем 60 дней бесплатного Pro-триала!
+    if (action === 'transfer') {
+      // Проверяем лимит переносов за 30 дней (максимум 4)
+      const windowStart = now - (30 * 86400);
+      const trRow = await c.env.DB.prepare(`
+        SELECT COUNT(*) as count FROM host_transfers
+        WHERE org_id = ? AND transferred_at > ?
+      `).bind(orgMember.org_id, windowStart).first<{ count: number }>();
+
+      const used = trRow?.count ?? 0;
+      if (used >= 4) {
+        return c.json({
+          status: 'error',
+          message: 'Исчерпан лимит переносов: не более 4 за последние 30 дней. Для подключения нескольких машин перейдите на тариф Pro.'
+        }, 429);
+      }
+
+      // Находим старый хост для отключения
+      const oldDev = await c.env.DB.prepare(`
+        SELECT d.id, d.name FROM devices d
+        JOIN workspaces w ON d.workspace_id = w.id
+        WHERE w.org_id = ?
+        ORDER BY d.created_at ASC
+        LIMIT 1
+      `).bind(orgMember.org_id).first<{ id: string; name: string }>();
+
+      if (oldDev) {
+        oldDeviceIdToRecord = oldDev.id;
+        await c.env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(oldDev.id).run();
+      }
+
+      successMsg = `Привязка успешно перенесена на «${pairing.device_name}». Прежний компьютер отключен (использовано переносов: ${used + 1} из 4 за 30 дн.).`;
+    } else if (action === 'trial') {
+      if (orgMember.plan_tier !== 'free' || (orgMember.trial_used && orgMember.trial_used > 0)) {
+        return c.json({ status: 'error', message: 'Пробный период Pro уже был использован ранее.' }, 400);
+      }
+
       const trialEnd = now + (60 * 86400);
       await c.env.DB.prepare(`
         UPDATE subscriptions
@@ -247,23 +344,21 @@ pairRouter.post('/approve', async (c) => {
         WHERE org_id = ?
       `).bind(trialEnd, orgMember.org_id).run();
 
-      activatedTrialMessage = 'Вам активирован бесплатный пробный период Pro на 60 дней (до 5 хостов)! ';
+      successMsg = `Вам активирован ознакомительный период Pro на 60 дней (до 5 хостов)! Хост «${pairing.device_name}» успешно подключен.`;
     } else {
       return c.json({
         status: 'error',
-        message: orgMember.trial_used === 1
-          ? 'Пробный период Pro (60 дней) уже был использован. В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
-          : 'В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
-      }, 403);
+        message: 'Достигнут лимит хостов на бесплатном тарифе. Выберите перенос привязки на этот компьютер или включите пробный период Pro.'
+      }, 400);
     }
   }
 
-  // Выпускаем ключ устройства и регистрируем его
+  // Выпускаем ключ устройства и регистрируем новый хост
   const devId = `dev_${crypto.randomUUID().replace(/-/g, '').substring(0, 10)}`;
   const { prefix, fullKey } = generateDeviceKey();
   const keyHash = await sha256Hex(fullKey);
 
-  await c.env.DB.batch([
+  const batchQueries = [
     c.env.DB.prepare(`
       INSERT INTO devices (id, workspace_id, name, role, priority, key_hash, key_prefix, routing_mode, is_online, app_version, os_info, machine_id, created_at)
       VALUES (?, ?, ?, 'primary', 100, ?, ?, 'proxy', 0, ?, ?, ?, ?)
@@ -274,11 +369,23 @@ pairRouter.post('/approve', async (c) => {
       SET status = 'approved', device_key = ?, workspace_id = ?
       WHERE code = ?
     `).bind(fullKey, workspace.id, code)
-  ]);
+  ];
+
+  if (action === 'transfer') {
+    const trId = `tr_${crypto.randomUUID().replace(/-/g, '')}`;
+    batchQueries.push(
+      c.env.DB.prepare(`
+        INSERT INTO host_transfers (id, org_id, old_device_id, new_device_id, transferred_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).bind(trId, orgMember.org_id, oldDeviceIdToRecord, devId, now)
+    );
+  }
+
+  await c.env.DB.batch(batchQueries);
 
   return c.json({
     status: 'ok',
-    message: `${activatedTrialMessage}Хост-программа «${pairing.device_name}» успешно привязана к аккаунту!`,
+    message: successMsg,
     device_id: devId
   });
 });

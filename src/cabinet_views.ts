@@ -338,14 +338,30 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
             Хост-программа на вашем компьютере запрашивает привязку к этому аккаунту.
           </p>
           <div style="background:#0f1217; border:1px solid #283141; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
-            <div><strong>Хост:</strong> <span id="pairDeviceName">—</span></div>
+            <div><strong>Новый хост:</strong> <span id="pairDeviceName">—</span></div>
             <div style="margin-top:4px;"><strong>Платформа:</strong> <span id="pairOsInfo">—</span></div>
             <div style="margin-top:4px;"><strong>Код проверки:</strong> <span id="pairCodeDisplay" style="color:#38bdf8; font-weight:700;">—</span></div>
           </div>
+
+          <div id="pairConflictBlock" style="display:none; background:#18181b; border:1px solid #713f12; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
+            <div style="color:#fbbf24; font-weight:600; margin-bottom:6px;">⚠ На бесплатном тарифе доступен 1 хост</div>
+            <div style="color:#e4e4e7;">Сейчас подключен: <strong id="pairExistingName">—</strong> (<span id="pairExistingStatus">—</span>)</div>
+            <div style="color:#a1a1aa; font-size:12px; margin-top:6px;">
+              Переносов за последние 30 дней: <strong id="pairTransfersUsed">0</strong> из <strong>4</strong>.
+            </div>
+          </div>
+
           <div id="pairError" style="color:#f87171; font-size:13px; margin-bottom:12px; display:none;"></div>
-          <div class="modal-actions">
+
+          <div id="pairStandardActions" class="modal-actions">
             <button type="button" onclick="closePairModal()" class="btn-secondary">Отклонить</button>
-            <button id="pairApproveBtn" type="button" onclick="confirmPairing()" class="btn-primary">Подтвердить привязку</button>
+            <button id="pairApproveBtn" type="button" onclick="confirmPairing('standard')" class="btn-primary">Подтвердить привязку</button>
+          </div>
+
+          <div id="pairConflictActions" class="modal-actions" style="display:none; flex-direction:column; gap:8px;">
+            <button id="pairTransferBtn" type="button" onclick="confirmPairing('transfer')" class="btn-primary" style="background:#0284c7; width:100%; padding:10px;">🔄 Перенести привязку на этот компьютер</button>
+            <button id="pairTrialBtn" type="button" onclick="confirmPairing('trial')" class="btn-primary" style="background:#7c3aed; width:100%; padding:10px; display:none;">✨ Оставить оба (Включить 60 дней Pro)</button>
+            <button type="button" onclick="closePairModal()" class="btn-secondary" style="width:100%; margin-top:4px;">Отмена</button>
           </div>
         </div>
       </div>

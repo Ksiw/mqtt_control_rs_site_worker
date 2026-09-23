@@ -213,22 +213,12 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
   const now = Math.floor(Date.now() / 1000);
 
   if (count >= maxDevices) {
-    if (orgMember?.plan_tier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0)) {
-      // Автоматически включаем 60 дней бесплатного Pro-триала
-      const trialEnd = now + (60 * 86400);
-      await c.env.DB.prepare(`
-        UPDATE subscriptions
-        SET plan_tier = 'pro', status = 'trialing', max_devices = 5, trial_used = 1, current_period_end = ?
-        WHERE org_id = ?
-      `).bind(trialEnd, orgMember.org_id).run();
-    } else {
-      return c.json({
-        status: 'error',
-        message: orgMember?.trial_used === 1
-          ? 'Пробный период Pro (60 дней) уже был использован. В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
-          : 'В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
-      }, 403);
-    }
+    return c.json({
+      status: 'error',
+      message: orgMember?.trial_used === 1
+        ? 'Пробный период Pro (60 дней) уже был использован. В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
+        : 'В бесплатном тарифе доступен 1 хост. Чтобы перенести привязку на новый компьютер или подключить дополнительный хост, используйте кнопку связки в программе или оформите Pro.'
+    }, 403);
   }
 
   const devId = `dev_${crypto.randomUUID().replace(/-/g, '').substring(0, 10)}`;

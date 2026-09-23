@@ -17,24 +17,64 @@ export function renderCabinetScripts(currentWsId: string): string {
               document.getElementById('pairDeviceName').textContent = data.device_name;
               document.getElementById('pairOsInfo').textContent = data.os_info || 'ПК';
               document.getElementById('pairCodeDisplay').textContent = pairCode;
+
+              if (data.has_limit_reached && data.existing_device) {
+                document.getElementById('pairConflictBlock').style.display = 'block';
+                document.getElementById('pairExistingName').textContent = data.existing_device.name;
+                document.getElementById('pairExistingStatus').textContent = data.existing_device.is_online ? 'в сети' : 'не в сети';
+                document.getElementById('pairTransfersUsed').textContent = data.transfers_used;
+
+                document.getElementById('pairStandardActions').style.display = 'none';
+                document.getElementById('pairConflictActions').style.display = 'flex';
+
+                const transferBtn = document.getElementById('pairTransferBtn');
+                if (data.can_transfer) {
+                  transferBtn.disabled = false;
+                  transferBtn.textContent = '🔄 Перенести привязку на этот компьютер';
+                } else {
+                  transferBtn.disabled = true;
+                  transferBtn.textContent = 'Лимит переносов исчерпан (4 из 4 за 30 дн.)';
+                  transferBtn.style.opacity = '0.5';
+                  transferBtn.style.cursor = 'not-allowed';
+                }
+
+                if (data.can_trial) {
+                  document.getElementById('pairTrialBtn').style.display = 'block';
+                } else {
+                  document.getElementById('pairTrialBtn').style.display = 'none';
+                }
+              } else {
+                document.getElementById('pairConflictBlock').style.display = 'none';
+                document.getElementById('pairStandardActions').style.display = 'flex';
+                document.getElementById('pairConflictActions').style.display = 'none';
+              }
+
               document.getElementById('pairApproveModal').style.display = 'flex';
             }
           } catch (err) {}
         }
       });
 
-      async function confirmPairing() {
-        const btn = document.getElementById('pairApproveBtn');
+      async function confirmPairing(action = 'standard') {
         const errDiv = document.getElementById('pairError');
-        btn.disabled = true;
-        btn.textContent = 'Привязка...';
         errDiv.style.display = 'none';
+
+        let btn = document.getElementById('pairApproveBtn');
+        if (action === 'transfer') {
+          btn = document.getElementById('pairTransferBtn');
+        } else if (action === 'trial') {
+          btn = document.getElementById('pairTrialBtn');
+        }
+
+        const originalText = btn.textContent;
+        btn.disabled = true;
+        btn.textContent = 'Обработка...';
 
         try {
           const res = await fetch('/api/v1/pair/approve', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: activePairCode })
+            body: JSON.stringify({ code: activePairCode, action: action })
           });
           const data = await res.json();
           if (data.status === 'ok') {
@@ -44,13 +84,13 @@ export function renderCabinetScripts(currentWsId: string): string {
             errDiv.textContent = data.message || 'Ошибка подтверждения';
             errDiv.style.display = 'block';
             btn.disabled = false;
-            btn.textContent = 'Подтвердить привязку';
+            btn.textContent = originalText;
           }
         } catch (e) {
           errDiv.textContent = 'Сетевая ошибка';
           errDiv.style.display = 'block';
           btn.disabled = false;
-          btn.textContent = 'Подтвердить привязку';
+          btn.textContent = originalText;
         }
       }
 
