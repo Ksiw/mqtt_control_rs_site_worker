@@ -147,6 +147,22 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
         .btn-secondary { background: #1e2430; border: 1px solid #333d4e; color: #cbd5e1; padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer; }
         .btn-secondary:hover { background: #283141; }
         
+        .btn-primary { background: #0284c7; color: #fff; border: 1px solid transparent; padding: 8px 18px; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; }
+        .btn-primary:hover { background: #0369a1; }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        
+        .form-group { margin-bottom: 16px; text-align: left; }
+        .form-label { display: block; font-size: 13px; color: #94a3b8; margin-bottom: 6px; }
+        .form-input, .form-select { width: 100%; background: #0f1217; border: 1px solid #283141; color: #f8fafc; padding: 10px 14px; border-radius: 6px; font-size: 14px; outline: none; transition: border-color 0.15s; }
+        .form-input:focus, .form-select:focus { border-color: #38bdf8; }
+        .form-input::placeholder { color: #475569; }
+        
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.75); z-index: 1000; align-items: center; justify-content: center; backdrop-filter: blur(2px); }
+        .modal-box { background: #181d28; border: 1px solid #334155; border-radius: 12px; padding: 24px; max-width: 440px; width: 92%; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .modal-title { color: #f8fafc; font-size: 17px; font-weight: 600; margin-bottom: 16px; text-align: left; }
+        .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+        .key-display { background: #0f1217; border: 1px dashed #38bdf8; padding: 12px; border-radius: 6px; font-family: monospace; font-size: 13px; color: #38bdf8; word-break: break-all; user-select: all; margin: 12px 0; text-align: left; }
+
         table { width: 100%; border-collapse: collapse; font-size: 14px; text-align: left; }
         th { color: #64748b; font-weight: 500; padding: 10px 14px; border-bottom: 1px solid #222938; }
         td { padding: 12px 14px; border-bottom: 1px solid #1a202c; }
@@ -218,10 +234,53 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
           </div>
         </div>
 
+        <!-- Модальное окно создания узла -->
+        <div id="addDeviceModal" class="modal-overlay">
+          <div class="modal-box">
+            <div class="modal-title">Новый узел</div>
+            <form id="addDeviceForm" onsubmit="submitAddDevice(event)">
+              <div class="form-group">
+                <label class="form-label" for="deviceNameInput">Название узла</label>
+                <input id="deviceNameInput" class="form-input" type="text" placeholder="АРМ Диспетчера" required autocomplete="off" />
+              </div>
+              <div class="form-group">
+                <label class="form-label" for="deviceRoleSelect">Роль узла</label>
+                <select id="deviceRoleSelect" class="form-select">
+                  <option value="primary">Основной (Primary)</option>
+                  <option value="standby">Резервный (Standby)</option>
+                </select>
+              </div>
+              <div id="addDeviceError" style="color: #f87171; font-size: 13px; margin-bottom: 12px; display: none;"></div>
+              <div class="modal-actions">
+                <button type="button" onclick="closeAddDeviceModal()" class="btn-secondary">Отмена</button>
+                <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Создать узел</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <!-- Модальное окно с созданным ключом -->
+        <div id="keySuccessModal" class="modal-overlay">
+          <div class="modal-box" style="max-width: 480px;">
+            <div class="modal-title" style="color:#4ade80;">✓ Узел создан</div>
+            <p style="font-size: 13px; color: #94a3b8; text-align: left; line-height: 1.5;">
+              Скопируйте секретный ключ и вставьте его в программе <strong>mqtt_control_rs</strong> в окне «Сервер» → «Облачный хаб»:
+            </p>
+            <div id="keyDisplayBox" class="key-display"></div>
+            <div style="font-size: 12px; color: #f59e0b; margin-bottom: 16px; text-align: left;">
+              ⚠ Ключ отображается только один раз. Обязательно скопируйте его сейчас.
+            </div>
+            <div class="modal-actions" style="justify-content: space-between;">
+              <button id="copyKeyBtn" type="button" onclick="copyCreatedKey()" class="btn-secondary">📋 Скопировать ключ</button>
+              <button type="button" onclick="location.reload()" class="btn-primary">Готово</button>
+            </div>
+          </div>
+        </div>
+
         <!-- Блок подключённых устройств -->
         <div class="section-title">
           <span>Подключённые узлы (ПК диспетчера / Серверы)</span>
-          <button class="btn-secondary" onclick="addDevice('${workspaces[0]?.id || ''}')">+ Добавить узел</button>
+          <button class="btn-secondary" onclick="openAddDeviceModal('${workspaces[0]?.id || ''}')">+ Добавить узел</button>
         </div>
 
         <div class="card" style="padding:0; overflow:hidden;">
@@ -261,29 +320,80 @@ const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       </div>
 
       <script>
-        async function addDevice(wsId) {
-          const name = prompt('Введите название для нового узла (например, «АРМ Диспетчера»):');
+        let currentWorkspaceId = '';
+        let createdDeviceKey = '';
+
+        function openAddDeviceModal(wsId) {
+          currentWorkspaceId = wsId;
+          document.getElementById('deviceNameInput').value = '';
+          document.getElementById('deviceRoleSelect').value = 'primary';
+          document.getElementById('addDeviceError').style.display = 'none';
+          document.getElementById('addDeviceModal').style.display = 'flex';
+          setTimeout(() => document.getElementById('deviceNameInput').focus(), 50);
+        }
+
+        function closeAddDeviceModal() {
+          document.getElementById('addDeviceModal').style.display = 'none';
+        }
+
+        async function submitAddDevice(e) {
+          e.preventDefault();
+          const nameInput = document.getElementById('deviceNameInput');
+          const roleSelect = document.getElementById('deviceRoleSelect');
+          const submitBtn = document.getElementById('addDeviceSubmitBtn');
+          const errDiv = document.getElementById('addDeviceError');
+
+          const name = nameInput.value.trim();
           if (!name) return;
 
-          const res = await fetch('/api/v1/devices/create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ workspace_id: wsId, name: name, role: 'primary' })
-          });
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Создание...';
+          errDiv.style.display = 'none';
 
-          const data = await res.json();
-          if (data.status === 'ok') {
-            alert('Узел создан! Скопируйте секретный ключ в настройки программы mqtt_control_rs:\\n\\n' + data.device_key + '\\n\\n(Ключ отображается только один раз)');
-            location.reload();
-          } else {
-            alert('Ошибка создания: ' + (data.message || 'неизвестная ошибка'));
+          try {
+            const res = await fetch('/api/v1/devices/create', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ workspace_id: currentWorkspaceId, name: name, role: roleSelect.value })
+            });
+            const data = await res.json();
+            if (data.status === 'ok') {
+              closeAddDeviceModal();
+              createdDeviceKey = data.device_key;
+              document.getElementById('keyDisplayBox').textContent = createdDeviceKey;
+              document.getElementById('keySuccessModal').style.display = 'flex';
+            } else {
+              errDiv.textContent = data.message || 'Ошибка создания узла';
+              errDiv.style.display = 'block';
+            }
+          } catch (err) {
+            errDiv.textContent = 'Сетевая ошибка при создании узла';
+            errDiv.style.display = 'block';
+          } finally {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Создать узел';
+          }
+        }
+
+        async function copyCreatedKey() {
+          if (!createdDeviceKey) return;
+          try {
+            await navigator.clipboard.writeText(createdDeviceKey);
+            const btn = document.getElementById('copyKeyBtn');
+            btn.textContent = '✓ Скопировано!';
+            setTimeout(() => { btn.textContent = '📋 Скопировать ключ'; }, 2500);
+          } catch (err) {
+            const box = document.getElementById('keyDisplayBox');
+            const range = document.createRange();
+            range.selectNodeContents(box);
+            window.getSelection().removeAllRanges();
+            window.getSelection().addRange(range);
           }
         }
 
         function showQr(path, title) {
           const fullUrl = window.location.origin + path;
           document.getElementById('qrTitle').textContent = title;
-          // Генерация QR-кода через публичный безопасный API
           document.getElementById('qrImage').src = 'https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=' + encodeURIComponent(fullUrl);
           document.getElementById('qrModal').style.display = 'flex';
         }
