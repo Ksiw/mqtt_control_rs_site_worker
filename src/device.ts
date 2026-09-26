@@ -43,6 +43,14 @@ deviceRouter.post('/heartbeat', async (c) => {
       return c.json({ status: 'error', message: 'Устройство не найдено или доступ отозван' }, 404);
     }
 
+    const deviceKey = c.req.header('X-Device-Key');
+    if (deviceKey) {
+      const keyHash = await sha256Hex(deviceKey);
+      if (keyHash !== device.key_hash) {
+        return c.json({ status: 'error', message: 'Недействительный ключ устройства' }, 401);
+      }
+    }
+
     // 2. Обновляем статус устройства в базе данных D1
     const batchQueries: any[] = [
       c.env.DB.prepare(`
@@ -141,6 +149,14 @@ deviceRouter.post('/unlink', async (c) => {
       return c.json({ status: 'ok', message: 'Устройство уже отвязано или отсутствует' }, 200);
     }
 
+    const deviceKey = c.req.header('X-Device-Key');
+    if (deviceKey) {
+      const keyHash = await sha256Hex(deviceKey);
+      if (keyHash !== device.key_hash) {
+        return c.json({ status: 'error', message: 'Недействительный ключ устройства' }, 401);
+      }
+    }
+
     // 2. Удаление связанных дашбордов и самого устройства из БД D1 (освобождает machine_id)
     await c.env.DB.batch([
       c.env.DB.prepare('DELETE FROM dashboards WHERE device_id = ?').bind(device.id),
@@ -163,8 +179,9 @@ deviceRouter.post('/unlink', async (c) => {
  */
 deviceRouter.get('/tunnel-ws', async (c) => {
   const prefix = c.req.header('X-Device-Prefix') || c.req.query('prefix');
-  if (!prefix) {
-    return c.text('X-Device-Prefix required', 400);
+  const deviceKey = c.req.header('X-Device-Key') || c.req.query('key');
+  if (!prefix || !deviceKey) {
+    return c.text('Не указаны обязательные параметры аутентификации (prefix и key)', 401);
   }
 
   const device = await c.env.DB.prepare(
@@ -172,7 +189,12 @@ deviceRouter.get('/tunnel-ws', async (c) => {
   ).bind(prefix, prefix, prefix).first<Device>();
 
   if (!device) {
-    return c.text('Device not found', 404);
+    return c.text('Устройство не найдено или доступ отозван', 404);
+  }
+
+  const keyHash = await sha256Hex(deviceKey);
+  if (keyHash !== device.key_hash) {
+    return c.text('Недействительный ключ устройства', 401);
   }
 
   const now = Math.floor(Date.now() / 1000);

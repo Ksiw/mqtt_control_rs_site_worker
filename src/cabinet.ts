@@ -216,12 +216,21 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
 
   // Проверяем организацию, подписку и лимит хостов
   const orgMember = await c.env.DB.prepare(`
-    SELECT o.id as org_id, s.plan_tier, s.status, s.max_devices, s.trial_used
+    SELECT o.id as org_id, s.plan_tier, s.status, s.max_devices, s.trial_used, m.role as user_role
     FROM workspaces w
     JOIN organizations o ON w.org_id = o.id
+    JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
     LEFT JOIN subscriptions s ON s.org_id = o.id
     WHERE w.id = ?
-  `).bind(workspace_id).first<{ org_id: string; plan_tier: string; status: string; max_devices: number; trial_used: number }>();
+  `).bind(user.id, workspace_id).first<{ org_id: string; plan_tier: string; status: string; max_devices: number; trial_used: number; user_role: string }>();
+
+  if (!orgMember) {
+    return c.json({ status: 'error', message: 'Рабочее пространство не найдено или у вас нет доступа к этой организации' }, 403);
+  }
+
+  if (orgMember.user_role !== 'owner' && orgMember.user_role !== 'admin') {
+    return c.json({ status: 'error', message: 'Только владелец или администратор организации может создавать хосты' }, 403);
+  }
 
   const maxDevices = orgMember?.max_devices ?? 1;
   const currentDevCount = await c.env.DB.prepare(`

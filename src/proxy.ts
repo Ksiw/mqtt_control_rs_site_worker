@@ -229,17 +229,7 @@ proxyRouter.all('/operator/*', async (c) => {
   }
 
   if (!wsId) {
-    const activeDev = (await (c.env.DB.prepare(
-      'SELECT id, workspace_id FROM devices WHERE is_online = 1 AND tunnel_url IS NOT NULL ORDER BY last_heartbeat_at DESC LIMIT 1'
-    ) as any).first()) as { id: string; workspace_id: string } | null;
-    if (activeDev) {
-      wsId = activeDev.workspace_id;
-      if (!devId) devId = activeDev.id;
-    }
-  }
-
-  if (!wsId) {
-    return c.json({ error: 'No active workspace found for operator request' }, 404);
+    return c.json({ error: 'No active workspace found for operator request', message: 'Рабочее пространство не определено' }, 404);
   }
 
   let targetPath = c.req.path;
