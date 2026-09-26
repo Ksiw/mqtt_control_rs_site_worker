@@ -182,3 +182,84 @@ adminRouter.post('/license/revoke', async (c) => {
     message: `Лицензия Pro отозвана для ${targetEmail}. Тариф сброшен на Free.`
   });
 });
+
+/**
+ * Получить системные цены на подписку
+ */
+export async function getPlanPrices(db: D1Database): Promise<{ month: number; year: number }> {
+  try {
+    const rows = await db.prepare(
+      "SELECT key, value FROM system_settings WHERE key IN ('price_month_usd', 'price_year_usd')"
+    ).all<{ key: string; value: string }>();
+
+    let month = 12.0;
+    let year = 100.0;
+
+    for (const r of rows.results || []) {
+      if (r.key === 'price_month_usd') {
+        const val = parseFloat(r.value);
+        if (!isNaN(val) && val > 0) month = val;
+      } else if (r.key === 'price_year_usd') {
+        const val = parseFloat(r.value);
+        if (!isNaN(val) && val > 0) year = val;
+      }
+    }
+    return { month, year };
+  } catch {
+    return { month: 12.0, year: 100.0 };
+  }
+}
+
+/**
+ * Получить текущие цены (для админки)
+ * GET /api/v1/admin/pricing
+ */
+adminRouter.get('/pricing', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!isSuperAdmin(user)) {
+    return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
+  }
+
+  const prices = await getPlanPrices(c.env.DB);
+  return c.json({ status: 'ok', pricing: prices });
+});
+
+/**
+ * Изменить цены подписки
+ * POST /api/v1/admin/pricing
+ * Body: { month: number, year: number }
+ */
+adminRouter.post('/pricing', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!isSuperAdmin(user)) {
+    return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
+  }
+
+  const { month, year } = (await c.req.json().catch(() => ({}))) as {
+    month?: number;
+    year?: number;
+  };
+
+  if (typeof month !== 'number' || typeof year !== 'number' || month <= 0 || year <= 0) {
+    return c.json({ status: 'error', message: 'Некорректные цены' }, 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+
+  await c.env.DB.batch([
+    c.env.DB.prepare(`
+      INSERT INTO system_settings (key, value, updated_at) VALUES ('price_month_usd', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).bind(month.toFixed(2), now),
+    c.env.DB.prepare(`
+      INSERT INTO system_settings (key, value, updated_at) VALUES ('price_year_usd', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+    `).bind(year.toFixed(2), now),
+  ]);
+
+  return c.json({
+    status: 'ok',
+    message: `Цены успешно обновлены: $${month}/мес, $${year}/год`,
+    pricing: { month, year }
+  });
+});

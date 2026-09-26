@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { Env } from './types';
 import { getCurrentUser } from './cabinet';
+import { getPlanPrices } from './admin';
 
 export const billingRouter = new Hono<{ Bindings: Env }>();
 
@@ -49,12 +50,13 @@ billingRouter.post('/create-invoice', async (c) => {
     duration?: 'month' | 'year';
   };
 
+  const prices = await getPlanPrices(c.env.DB);
   const isYear = duration === 'year';
-  const amountUsd = isYear ? 100.0 : 12.0;
+  const amountUsd = isYear ? prices.year : prices.month;
   const durationDays = isYear ? 365 : 30;
   const planDescription = isYear
-    ? 'MQTT Control RS Pro (1 год, скидка 30%)'
-    : 'MQTT Control RS Pro (1 месяц)';
+    ? `MQTT Control RS Pro (1 год, $${amountUsd})`
+    : `MQTT Control RS Pro (1 месяц, $${amountUsd})`;
 
   // Находим организацию пользователя (требуются права владельца или админа)
   const orgMember = await c.env.DB.prepare(`

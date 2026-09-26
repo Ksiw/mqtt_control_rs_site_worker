@@ -90,10 +90,11 @@ interface CabinetViewProps {
   isTrial?: boolean;
   daysLeft?: number;
   paymentNotification?: string;
+  planPrices?: { month: number; year: number };
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
-  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isSuperAdmin, isTrial, daysLeft, paymentNotification } = props;
+  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isSuperAdmin, isTrial, daysLeft, paymentNotification, planPrices } = props;
   const currentWsId = workspaces[0]?.id || '';
   const totalAccounts = members.length + pendingInvites.length;
   const canAddDevice = devices.length < maxDevices && isOwner;
@@ -315,14 +316,14 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
 
         <!-- Панель супер-администратора (если есть права) -->
-        ${renderAdminSection(Boolean(isSuperAdmin))}
+        ${renderAdminSection(Boolean(isSuperAdmin), planPrices)}
 
         <div style="text-align:center; padding:20px 0 8px; font-size:12px; color:#475569;">
           MQTT Control RS Cloud Hub · v1.2.0
         </div>
       </div>
 
-      ${renderCabinetModals()}
+      ${renderCabinetModals(planPrices)}
 
       ${renderCabinetScripts(currentWsId)}
       ${renderAdminScripts(Boolean(isSuperAdmin))}

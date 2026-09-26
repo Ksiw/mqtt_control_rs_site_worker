@@ -3,7 +3,7 @@ import { getCookie } from 'hono/cookie';
 import { Env, User, Organization, Workspace, Device } from './types';
 import { renderLoginHtml } from './login_view';
 import { renderCabinetHtml } from './cabinet_views';
-import { isSuperAdmin } from './admin';
+import { isSuperAdmin, getPlanPrices } from './admin';
 
 export const cabinetRouter = new Hono<{ Bindings: Env }>();
 
@@ -78,6 +78,8 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
   let maxDevices = 1;
   let maxMembers = 5;
   let isOwner = false;
+
+  const planPrices = await getPlanPrices(c.env.DB);
 
   if (currentOrg) {
     isOwner = currentOrg.owner_user_id === user.id;
@@ -183,7 +185,8 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       isSuperAdmin: isSuperAdmin(user),
       isTrial,
       daysLeft,
-      paymentNotification
+      paymentNotification,
+      planPrices
     }));
   }
 
@@ -208,7 +211,8 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     maxMembers,
     isOwner: true,
     isSuperAdmin: isSuperAdmin(user),
-    paymentNotification
+    paymentNotification,
+    planPrices
   }));
 };
 

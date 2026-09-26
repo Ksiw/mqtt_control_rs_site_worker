@@ -1,16 +1,40 @@
 /**
  * HTML-разметка блока супер-администратора (управление лицензиями)
  */
-export function renderAdminSection(isSuperAdmin: boolean): string {
+export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: number; year: number }): string {
   if (!isSuperAdmin) return '';
+
+  const curMonth = (planPrices?.month ?? 12.0).toFixed(2);
+  const curYear = (planPrices?.year ?? 100.0).toFixed(2);
 
   return `
     <!-- Панель супер-администратора -->
     <div class="section-title" style="margin-top: 40px; border-top: 1px dashed #334155; padding-top: 24px;">
       <span style="color:#f59e0b; display:flex; align-items:center; gap:8px;">
-        🛡️ Управление лицензиями (Администратор системы)
+        🛡️ Управление лицензиями и ценами (Администратор системы)
       </span>
       <button class="btn-secondary" onclick="loadAdminUsers()">Обновить список</button>
+    </div>
+
+    <!-- Настройка стоимости подписки -->
+    <div class="card" style="margin-bottom: 24px;">
+      <div style="font-size: 14px; font-weight: 600; color: #f8fafc; margin-bottom: 12px;">Установка стоимости подписки Pro</div>
+      <form id="pricingForm" onsubmit="submitAdminPricing(event)" style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
+        <div style="width:160px;">
+          <label class="form-label" for="priceMonthInput">1 месяц ($ USD)</label>
+          <input id="priceMonthInput" class="form-input" type="number" step="0.5" min="1" value="${curMonth}" required />
+        </div>
+        <div style="width:160px;">
+          <label class="form-label" for="priceYearInput">1 год ($ USD)</label>
+          <input id="priceYearInput" class="form-input" type="number" step="1" min="1" value="${curYear}" required />
+        </div>
+        <div>
+          <button id="priceSubmitBtn" type="submit" class="btn-primary" style="background:#0284c7; padding:10px 18px;">
+            💾 Сохранить цены
+          </button>
+        </div>
+      </form>
+      <div id="pricingMsg" style="font-size:13px; margin-top:10px; display:none;"></div>
     </div>
 
     <div class="card" style="margin-bottom: 24px;">
@@ -210,6 +234,39 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
           }
         } catch (err) {
           alert('Ошибка сети');
+        }
+      }
+
+      async function submitAdminPricing(e) {
+        e.preventDefault();
+        const month = parseFloat(document.getElementById('priceMonthInput').value);
+        const year = parseFloat(document.getElementById('priceYearInput').value);
+        const msgDiv = document.getElementById('pricingMsg');
+        const btn = document.getElementById('priceSubmitBtn');
+        btn.disabled = true;
+
+        try {
+          const res = await fetch('/api/v1/admin/pricing', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ month, year })
+          });
+          const data = await res.json();
+          msgDiv.style.display = 'block';
+          if (data.status === 'ok') {
+            msgDiv.style.color = '#34d399';
+            msgDiv.textContent = '✓ ' + data.message;
+            setTimeout(() => { location.reload(); }, 1200);
+          } else {
+            msgDiv.style.color = '#f87171';
+            msgDiv.textContent = '✕ ' + (data.message || 'Ошибка');
+          }
+        } catch (err) {
+          msgDiv.style.display = 'block';
+          msgDiv.style.color = '#f87171';
+          msgDiv.textContent = '✕ Ошибка сети';
+        } finally {
+          btn.disabled = false;
         }
       }
 
