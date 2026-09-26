@@ -16,3 +16,16 @@ crons = ["* * * * *"]
 [vars]
 ENVIRONMENT = "production"
 HUB_DOMAIN = "https://mqtt-control-rs.pages.dev"
+
+[durable_objects]
+bindings = [
+  { name = "TUNNEL_DO", class_name = "DeviceTunnel" }
+]
+
+[[migrations]]
+tag = "v2"
+deleted_classes = ["TunnelHub"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["DeviceTunnel"]

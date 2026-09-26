@@ -4,6 +4,7 @@ export interface Env {
   DB: D1Database;
   ENVIRONMENT: string;
   HUB_DOMAIN: string;
+  TUNNEL_DO: DurableObjectNamespace;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   SESSION_SECRET?: string;

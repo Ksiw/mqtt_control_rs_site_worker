@@ -17,12 +17,14 @@ app.route('/api/v1/pair', pairRouter);
 app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 
-export const APP_VERSION = '1.1.0';
+export const APP_VERSION = '1.2.0';
 
 // Проверка статуса сервиса
 app.get('/api/v1/health', (c) => {
   return c.json({ status: 'ok', version: APP_VERSION, time: Math.floor(Date.now() / 1000) });
 });
+
+export { DeviceTunnel } from './device_tunnel';
 
 // Экспорт обработчиков для Cloudflare Workers
 export default {
@@ -58,4 +60,3 @@ export default {
     `).bind(thirtyDaysAgo).run();
   }
 };
-

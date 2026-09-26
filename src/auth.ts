@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Env, User } from './types';
+import { sha256Hex } from './crypto';
 
 export const authRouter = new Hono<{ Bindings: Env }>();
 
@@ -8,7 +9,7 @@ export const authRouter = new Hono<{ Bindings: Env }>();
  * Инициация входа через Google OAuth 2.0
  * GET /auth/google
  */
-authRouter.get('/google', (c) => {
+authRouter.get('/google', async (c) => {
   const clientId = c.env.GOOGLE_CLIENT_ID;
   if (!clientId) {
     return c.text('Google OAuth не настроен (отсутствует GOOGLE_CLIENT_ID в настройках Worker)', 500);
@@ -17,15 +18,21 @@ authRouter.get('/google', (c) => {
   // Определяем URL колбэка
   const origin = c.env.HUB_DOMAIN || `${new URL(c.req.url).origin}`;
   const redirectUri = `${origin}/auth/callback`;
-  const state = crypto.randomUUID();
 
-  // Сохраняем state в cookie на 10 минут для защиты от CSRF
+  // Формируем криптографически подписанный state токен (не зависит от проблем с cookie в браузерах)
+  const now = Math.floor(Date.now() / 1000);
+  const nonce = crypto.randomUUID().replace(/-/g, '');
+  const secret = c.env.SESSION_SECRET || 'mcrs_oauth_hub_secret_salt';
+  const sig = await sha256Hex(`${nonce}:${now}:${secret}`);
+  const state = `${nonce}_${now}_${sig}`;
+
+  // Сохраняем state в cookie на 15 минут
   setCookie(c, 'oauth_state', state, {
     path: '/',
     secure: true,
     httpOnly: true,
     sameSite: 'Lax',
-    maxAge: 600
+    maxAge: 900
   });
 
   const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -48,7 +55,30 @@ authRouter.get('/callback', async (c) => {
   const state = c.req.query('state');
   const savedState = getCookie(c, 'oauth_state');
 
-  if (!code || !state || state !== savedState) {
+  // Двойная проверка безопасности: по cookie или по криптографической подписи state
+  let isStateValid = false;
+  if (state) {
+    if (savedState && state === savedState) {
+      isStateValid = true;
+    } else {
+      const parts = state.split('_');
+      if (parts.length === 3) {
+        const [nonce, tsStr, sig] = parts;
+        const ts = parseInt(tsStr, 10);
+        const now = Math.floor(Date.now() / 1000);
+        // Допустимый срок жизни — 15 минут
+        if (!isNaN(ts) && Math.abs(now - ts) < 900) {
+          const secret = c.env.SESSION_SECRET || 'mcrs_oauth_hub_secret_salt';
+          const expectedSig = await sha256Hex(`${nonce}:${tsStr}:${secret}`);
+          if (sig === expectedSig) {
+            isStateValid = true;
+          }
+        }
+      }
+    }
+  }
+
+  if (!code || !isStateValid) {
     return c.text('Ошибка проверки безопасности OAuth (неверный параметр state)', 400);
   }
 

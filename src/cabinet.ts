@@ -1,7 +1,8 @@
 import { Hono, Context } from 'hono';
 import { getCookie } from 'hono/cookie';
 import { Env, User, Organization, Workspace, Device } from './types';
-import { renderLoginHtml, renderCabinetHtml } from './cabinet_views';
+import { renderLoginHtml } from './login_view';
+import { renderCabinetHtml } from './cabinet_views';
 
 export const cabinetRouter = new Hono<{ Bindings: Env }>();
 
@@ -122,20 +123,40 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
 
     if (workspaces.length > 0) {
       const wsIds = workspaces.map(w => `'${w.id}'`).join(',');
+      const now = Math.floor(Date.now() / 1000);
       
       const devRes = await c.env.DB.prepare(
-        `SELECT * FROM devices WHERE workspace_id IN (${wsIds})`
-      ).all<Device>();
+        `SELECT *, CASE WHEN is_online = 1 AND (? - COALESCE(last_heartbeat_at, 0)) <= 60 THEN 1 ELSE 0 END as is_online 
+         FROM devices 
+         WHERE workspace_id IN (${wsIds})`
+      ).bind(now).all<Device>();
       devices = devRes.results || [];
 
-      const dashRes = await c.env.DB.prepare(
-        `SELECT d.*, w.slug as ws_slug, o.slug as org_slug 
-         FROM dashboards d 
-         JOIN workspaces w ON d.workspace_id = w.id
-         JOIN organizations o ON w.org_id = o.id
-         WHERE d.workspace_id IN (${wsIds})`
-      ).all();
-      dashboards = dashRes.results || [];
+      if (devices.length > 0) {
+        const dashRes = await c.env.DB.prepare(
+          `SELECT d.*, w.slug as ws_slug, o.slug as org_slug 
+           FROM dashboards d 
+           JOIN workspaces w ON d.workspace_id = w.id
+           JOIN organizations o ON w.org_id = o.id
+           WHERE d.workspace_id IN (${wsIds})`
+        ).all();
+        dashboards = (dashRes.results || []).map((d: any) => {
+          let devOnline = 0;
+          if (d.device_id) {
+            const dev = devices.find(dev => dev.id === d.device_id);
+            devOnline = dev && dev.is_online === 1 ? 1 : 0;
+          } else {
+            devOnline = devices.some(dev => dev.workspace_id === d.workspace_id && dev.is_online === 1) ? 1 : 0;
+          }
+          return {
+            ...d,
+            is_online: devOnline
+          };
+        });
+      } else {
+        dashboards = [];
+        await c.env.DB.prepare(`DELETE FROM dashboards WHERE workspace_id IN (${wsIds})`).run();
+      }
     }
 
     return c.html(renderCabinetHtml({
@@ -236,3 +257,115 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     device_key: fullKey
   });
 });
+
+/**
+ * API удаления хоста / устройства
+ * POST /api/v1/devices/delete
+ */
+cabinetRouter.post('/api/v1/devices/delete', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
+  }
+
+  const { device_id } = await c.req.json() as { device_id: string };
+  if (!device_id) {
+    return c.json({ status: 'error', message: 'Не указан идентификатор устройства' }, 400);
+  }
+
+  const device = await c.env.DB.prepare(`
+    SELECT d.id, d.name, d.workspace_id, o.owner_user_id
+    FROM devices d
+    JOIN workspaces w ON d.workspace_id = w.id
+    JOIN organizations o ON w.org_id = o.id
+    WHERE d.id = ?
+  `).bind(device_id).first<{ id: string; name: string; workspace_id: string; owner_user_id: string }>();
+
+  if (!device) {
+    return c.json({ status: 'error', message: 'Хост не найден' }, 404);
+  }
+
+  if (device.owner_user_id !== user.id) {
+    return c.json({ status: 'error', message: 'Только владелец организации может удалять хосты' }, 403);
+  }
+
+  await c.env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(device_id).run();
+  await c.env.DB.prepare('DELETE FROM dashboards WHERE device_id = ?').bind(device_id).run();
+
+  const remaining = await c.env.DB.prepare(
+    'SELECT COUNT(*) as count FROM devices WHERE workspace_id = ?'
+  ).bind(device.workspace_id).first<{ count: number }>();
+  if ((remaining?.count ?? 0) === 0) {
+    await c.env.DB.prepare('DELETE FROM dashboards WHERE workspace_id = ?').bind(device.workspace_id).run();
+  }
+
+  return c.json({
+    status: 'ok',
+    message: `Хост "${device.name}" успешно удалён`
+  });
+});
+
+/**
+ * Легковесный API для опроса состояния личного кабинета (Live Updates)
+ * GET /api/v1/cabinet/state
+ */
+cabinetRouter.get('/api/v1/cabinet/state', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ status: 'unauthorized' }, 401);
+  }
+
+  const org = await c.env.DB.prepare(`
+    SELECT o.id FROM organizations o
+    JOIN organization_members m ON m.org_id = o.id
+    WHERE m.user_id = ?
+    LIMIT 1
+  `).bind(user.id).first<{ id: string }>();
+
+  if (!org) {
+    return c.json({ status: 'ok', devices: [], dashboards: [] });
+  }
+
+  const workspaces = await c.env.DB.prepare(
+    'SELECT id FROM workspaces WHERE org_id = ?'
+  ).bind(org.id).all<{ id: string }>();
+
+  const wsList = workspaces.results || [];
+  if (wsList.length === 0) {
+    return c.json({ status: 'ok', devices: [], dashboards: [] });
+  }
+
+  const wsIds = wsList.map(w => `'${w.id}'`).join(',');
+  const now = Math.floor(Date.now() / 1000);
+
+  const devRes = await c.env.DB.prepare(
+    `SELECT id, name, role, CASE WHEN is_online = 1 AND (? - COALESCE(last_heartbeat_at, 0)) <= 60 THEN 1 ELSE 0 END as is_online, app_version 
+     FROM devices 
+     WHERE workspace_id IN (${wsIds})`
+  ).bind(now).all<any>();
+  const devices = devRes.results || [];
+
+  let dashboards: any[] = [];
+  if (devices.length > 0) {
+    const dashRes = await c.env.DB.prepare(
+      `SELECT d.id, d.name, d.slug, d.device_id, w.slug as ws_slug,
+              CASE 
+                WHEN d.device_id IS NOT NULL THEN
+                  EXISTS(SELECT 1 FROM devices dev WHERE dev.id = d.device_id AND dev.is_online = 1 AND (? - COALESCE(dev.last_heartbeat_at, 0)) <= 60)
+                ELSE
+                  EXISTS(SELECT 1 FROM devices dev WHERE dev.workspace_id = d.workspace_id AND dev.is_online = 1 AND (? - COALESCE(dev.last_heartbeat_at, 0)) <= 60)
+              END as is_online
+       FROM dashboards d 
+       JOIN workspaces w ON d.workspace_id = w.id
+       WHERE d.workspace_id IN (${wsIds})`
+    ).bind(now, now).all<any>();
+    dashboards = dashRes.results || [];
+  }
+
+  return c.json({
+    status: 'ok',
+    devices,
+    dashboards
+  });
+});
+

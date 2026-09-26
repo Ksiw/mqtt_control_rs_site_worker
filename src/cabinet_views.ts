@@ -1,41 +1,74 @@
 import { Device, Organization, User, Workspace } from './types';
 import { renderCabinetScripts } from './cabinet_scripts';
+export { renderLoginHtml } from './login_view';
 
-export function renderLoginHtml(): string {
+function renderDashCard(d: any): string {
+  const dashUrl = `/view/${d.org_slug}/${d.ws_slug}/${d.id}${d.slug && d.slug.includes('?') ? '?' + d.slug.split('?')[1] : ''}`;
+  const isOnline = d.is_online === 1;
   return `
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Управление | MQTT Control RS</title>
-      <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
-        body { background: #0f1217; color: #e2e8f0; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-        .login-card { background: #181d26; border: 1px solid #283141; border-radius: 12px; padding: 40px; width: 100%; max-width: 440px; text-align: center; box-shadow: 0 8px 30px rgba(0,0,0,0.4); }
-        .logo { font-size: 20px; font-weight: 700; letter-spacing: 0.5px; color: #38bdf8; margin-bottom: 12px; }
-        h1 { font-size: 24px; font-weight: 600; margin-bottom: 24px; }
-        .btn-google { display: inline-flex; align-items: center; justify-content: center; gap: 12px; width: 100%; background: #222938; color: #f8fafc; border: 1px solid #3b475d; padding: 12px 20px; border-radius: 8px; font-size: 15px; font-weight: 500; text-decoration: none; transition: background 0.15s, border-color 0.15s; }
-        .btn-google:hover { background: #2c364a; border-color: #38bdf8; }
-        .footer { margin-top: 24px; font-size: 12px; color: #64748b; }
-        .footer a { color: #94a3b8; text-decoration: none; }
-        .footer a:hover { color: #38bdf8; }
-      </style>
-    </head>
-    <body>
-      <div class="login-card">
-        <div class="logo">MQTT Control RS</div>
-        <h1>Управление</h1>
-        <a href="/auth/google" class="btn-google">
-          <svg width="18" height="18" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.66-5.17 3.66-9.17z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.36 24 12 24z"/><path fill="#FBBC05" d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.36 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"/></svg>
-          Войти через Google
-        </a>
-        <div class="footer">
-          <a href="https://mqtt-control-rs.pages.dev/">← Вернуться на главный сайт</a>
+    <div class="dash-card"${isOnline ? '' : ' style="opacity: 0.65;"'}>
+      <div>
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
+          ${isOnline 
+            ? '<span class="badge badge-online"><span class="dot"></span> Доступен</span>' 
+            : '<span class="badge badge-offline"><span class="dot"></span> Хост не в сети</span>'}
+          <span class="dash-meta">${d.ws_slug}</span>
         </div>
+        <div class="dash-name">${d.name}</div>
       </div>
-    </body>
-    </html>
+      <div style="display:flex; gap:8px;">
+        ${isOnline ? `
+          <a href="${dashUrl}" target="_blank" class="btn-open" style="flex:1;">Открыть дашборд ↗</a>
+          <button onclick="showQr('${dashUrl}', '${d.name.replace(/'/g, "\\'")}')" class="btn-secondary" title="QR-код для смартфона">📱 QR</button>
+        ` : `
+          <span class="btn-secondary" style="opacity:0.6; cursor:not-allowed; flex:1; text-align:center; padding:8px 0;">Хост не в сети</span>
+        `}
+      </div>
+    </div>
+  `;
+}
+
+function renderHostSection(dev: Device, devDashboards: any[]): string {
+  const onlineBadge = dev.is_online === 1
+    ? '<span class="badge badge-online"><span class="dot"></span> Онлайн</span>'
+    : '<span class="badge badge-offline"><span class="dot"></span> Оффлайн</span>';
+
+  return `
+    <div class="card" style="margin-bottom: 20px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #1e2430; flex-wrap:wrap; gap:8px;">
+        <div style="display:flex; align-items:center; gap:10px;">
+          <span style="font-size:18px;">🖥️</span>
+          <span style="font-size:16px; font-weight:600; color:#f8fafc;">${dev.name}</span>
+          ${dev.app_version ? `<span style="font-size:12px; color:#64748b;">v${dev.app_version}</span>` : ''}
+        </div>
+        <div>${onlineBadge}</div>
+      </div>
+      ${devDashboards.length > 0 ? `
+        <div class="grid">
+          ${devDashboards.map(renderDashCard).join('')}
+        </div>
+      ` : `
+        <div class="empty-state" style="padding:16px;">
+          На этом хосте пока нет опубликованных дашбордов. В окне программы «Сервер» включите синхронизацию дашбордов.
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function renderUnassignedDashboards(dashboards: any[], devices: Device[]): string {
+  if (devices.length <= 1) return '';
+  const unassigned = dashboards.filter(d => !devices.some(dev => dev.id === d.device_id));
+  if (unassigned.length === 0) return '';
+  return `
+    <div class="card" style="margin-bottom: 20px;">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #1e2430;">
+        <span style="font-size:15px; font-weight:600; color:#94a3b8;">📦 Прочие дашборды</span>
+      </div>
+      <div class="grid">
+        ${unassigned.map(renderDashCard).join('')}
+      </div>
+    </div>
   `;
 }
 
@@ -147,43 +180,27 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
       </div>
 
       <div class="container">
-        <!-- Блок Дашборды -->
+        <!-- Блок Дашборды по хостам -->
         <div class="section-title">
           <span>Дашборды</span>
         </div>
 
-        <div class="card">
-          ${dashboards.length === 0 ? `
+        ${devices.length === 0 ? `
+          <div class="card">
             <div class="empty-state">
-              Пока нет доступных дашбордов.<br>
+              Пока нет подключённых хост-программ и дашбордов.<br>
               ${isOwner 
-                ? 'Чтобы добавить дашборды, подключите хост-программу в блоке ниже.' 
-                : 'Владелец пространства пока не включил синхронизацию дашбордов.'}
+                ? 'Чтобы добавить дашборды, подключите хост-программу в блоке ниже или нажмите «+ Добавить хост».' 
+                : 'Владелец пространства пока не включил синхронизацию хоста.'}
             </div>
-          ` : `
-            <div class="grid">
-              ${dashboards.map(d => `
-                <div class="dash-card">
-                  <div>
-                    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:8px;">
-                      <span class="badge badge-online"><span class="dot"></span> Доступен</span>
-                      <span class="dash-meta">${d.ws_slug}</span>
-                    </div>
-                    <div class="dash-name">${d.name}</div>
-                  </div>
-                  <div style="display:flex; gap:8px;">
-                    <a href="/view/${d.org_slug}/${d.ws_slug}/${d.id}" target="_blank" class="btn-open" style="flex:1;">
-                      Открыть дашборд ↗
-                    </a>
-                    <button onclick="showQr('/view/${d.org_slug}/${d.ws_slug}/${d.id}', '${d.name}')" class="btn-secondary" title="QR-код для смартфона">
-                      📱 QR
-                    </button>
-                  </div>
-                </div>
-              `).join('')}
-            </div>
-          `}
-        </div>
+          </div>
+        ` : `
+          ${devices.map(dev => {
+            const devDashboards = dashboards.filter(d => d.device_id === dev.id || (!d.device_id && devices.length === 1));
+            return renderHostSection(dev, devDashboards);
+          }).join('')}
+          ${renderUnassignedDashboards(dashboards, devices)}
+        `}
 
         ${isOwner ? `
           <!-- Блок Хост-программы (доступен только владельцу) -->
@@ -206,24 +223,26 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
                 <thead>
                   <tr>
                     <th>Хост-программа</th>
-                    <th>Роль</th>
                     <th>Статус</th>
-                    <th>Префикс ключа</th>
                     <th>Версия</th>
+                    ${isOwner ? '<th style="text-align:right;">Действие</th>' : ''}
                   </tr>
                 </thead>
                 <tbody>
                   ${devices.map(dev => `
                     <tr>
                       <td style="font-weight:500;">${dev.name}</td>
-                      <td><span style="font-size:12px; color:#94a3b8; text-transform:uppercase;">${dev.role}</span></td>
                       <td>
                         ${dev.is_online === 1 
                           ? '<span class="badge badge-online"><span class="dot"></span> Онлайн</span>' 
                           : '<span class="badge badge-offline"><span class="dot"></span> Оффлайн</span>'}
                       </td>
-                      <td><code>${dev.key_prefix}****</code></td>
                       <td style="color:#64748b;">${dev.app_version || '—'}</td>
+                      ${isOwner ? `
+                        <td style="text-align:right;">
+                          <button onclick="removeDevice('${dev.id}', '${dev.name.replace(/'/g, "\\'")}')" class="btn-danger-sm">Удалить</button>
+                        </td>
+                      ` : ''}
                     </tr>
                   `).join('')}
                 </tbody>
@@ -318,13 +337,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
               <label class="form-label" for="deviceNameInput">Название хоста</label>
               <input id="deviceNameInput" class="form-input" type="text" placeholder="Домашний сервер" required autocomplete="off" />
             </div>
-            <div class="form-group">
-              <label class="form-label" for="deviceRoleSelect">Роль хоста</label>
-              <select id="deviceRoleSelect" class="form-select">
-                <option value="primary">Основной (Primary)</option>
-                <option value="standby">Резервный (Standby)</option>
-              </select>
-            </div>
+
             <div id="addDeviceError" style="color: #f87171; font-size: 13px; margin-bottom: 12px; display: none;"></div>
             <div class="modal-actions">
               <button type="button" onclick="closeAddDeviceModal()" class="btn-secondary">Отмена</button>

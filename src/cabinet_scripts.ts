@@ -101,7 +101,6 @@ export function renderCabinetScripts(currentWsId: string): string {
       function openAddDeviceModal(wsId) {
         currentWorkspaceId = wsId;
         document.getElementById('deviceNameInput').value = '';
-        document.getElementById('deviceRoleSelect').value = 'primary';
         document.getElementById('addDeviceError').style.display = 'none';
         document.getElementById('addDeviceModal').style.display = 'flex';
         setTimeout(() => document.getElementById('deviceNameInput').focus(), 50);
@@ -114,7 +113,6 @@ export function renderCabinetScripts(currentWsId: string): string {
       async function submitAddDevice(e) {
         e.preventDefault();
         const nameInput = document.getElementById('deviceNameInput');
-        const roleSelect = document.getElementById('deviceRoleSelect');
         const submitBtn = document.getElementById('addDeviceSubmitBtn');
         const errDiv = document.getElementById('addDeviceError');
 
@@ -129,7 +127,7 @@ export function renderCabinetScripts(currentWsId: string): string {
           const res = await fetch('/api/v1/devices/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ workspace_id: currentWorkspaceId, name: name, role: roleSelect.value })
+            body: JSON.stringify({ workspace_id: currentWorkspaceId, name: name, role: 'primary' })
           });
           const data = await res.json();
           if (data.status === 'ok') {
@@ -223,6 +221,25 @@ export function renderCabinetScripts(currentWsId: string): string {
         } catch (e) { alert('Ошибка сети'); }
       }
 
+      async function removeDevice(devId, devName) {
+        if (!confirm('Удалить хост-программу "' + (devName || '') + '"? Связь с этим узлом будет прекращена.')) return;
+        try {
+          const res = await fetch('/api/v1/devices/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ device_id: devId })
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            location.reload();
+          } else {
+            alert(data.message || 'Ошибка удаления хоста');
+          }
+        } catch (e) {
+          alert('Сетевая ошибка при удалении хоста');
+        }
+      }
+
       async function copyCreatedKey() {
         if (!createdDeviceKey) return;
         try {
@@ -249,6 +266,32 @@ export function renderCabinetScripts(currentWsId: string): string {
       function closeQr() {
         document.getElementById('qrModal').style.display = 'none';
       }
+
+      // Автоматическое обновление данных личного кабинета без ручного F5
+      let lastCabinetHash = '';
+      async function pollCabinetState() {
+        try {
+          const res = await fetch('/api/v1/cabinet/state');
+          if (res.ok) {
+            const data = await res.json();
+            if (data.status === 'ok') {
+              const currentHash = JSON.stringify({ dev: data.devices, dsh: data.dashboards });
+              if (lastCabinetHash && lastCabinetHash !== currentHash) {
+                // Если открыто модальное окно (например, добавление хоста), не прерываем пользователя
+                const modalOpen = Array.from(document.querySelectorAll('.modal-overlay'))
+                  .some(el => window.getComputedStyle(el).display !== 'none');
+                if (!modalOpen) {
+                  location.reload();
+                  return;
+                }
+              }
+              lastCabinetHash = currentHash;
+            }
+          }
+        } catch (_) {}
+        setTimeout(pollCabinetState, 2500);
+      }
+      setTimeout(pollCabinetState, 2500);
     </script>
   `;
 }
