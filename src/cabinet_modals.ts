@@ -144,7 +144,7 @@ export function renderCabinetModals(planPrices?: { month: number; year: number }
         </div>
 
         <div style="background:#131b29; border:1px solid #1e293b; border-radius:6px; padding:12px; font-size:12px; color:#94a3b8; margin-bottom:20px; text-align: left;">
-          Оплата в криптовалюте <strong>USDT / USDC</strong> (сети TRON, Polygon, TON, Ethereum) или банковской картой через шлюз <strong>NOWPayments</strong>.
+          Оплата в криптовалюте (<strong>USDT, USDC, TRX, Bitcoin</strong> и др.) через шлюз <strong>NOWPayments</strong>.
         </div>
 
         <div id="proModalError" style="color:#ef4444; font-size:13px; margin-bottom:12px; display:none; text-align:left;"></div>
