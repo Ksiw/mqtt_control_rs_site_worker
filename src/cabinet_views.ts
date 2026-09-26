@@ -1,5 +1,6 @@
 import { Device, Organization, User, Workspace } from './types';
 import { renderCabinetScripts } from './cabinet_scripts';
+import { renderCabinetModals } from './cabinet_modals';
 export { renderLoginHtml } from './login_view';
 
 function renderDashCard(d: any): string {
@@ -86,10 +87,11 @@ interface CabinetViewProps {
   isOwner: boolean;
   isTrial?: boolean;
   daysLeft?: number;
+  paymentNotification?: string;
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
-  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isTrial, daysLeft } = props;
+  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isTrial, daysLeft, paymentNotification } = props;
   const currentWsId = workspaces[0]?.id || '';
   const totalAccounts = members.length + pendingInvites.length;
   const canAddDevice = devices.length < maxDevices && isOwner;
@@ -101,7 +103,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
   } else if (isTrial) {
     tierBadge = `<span class="tier-badge" style="background:#2d1b06; border-color:#d97706; color:#fbbf24;">🔥 Тариф Pro (Пробный период: осталось ${daysLeft ?? 60} дн.) · до 5 хостов</span>`;
   } else if (planTier === 'pro') {
-    tierBadge = `<span class="tier-badge" style="background:#1e3a5f; border-color:#0284c7; color:#38bdf8;">★ Тариф Pro (активен) · до 5 хостов</span>`;
+    tierBadge = `<span class="tier-badge" style="background:#1e3a5f; border-color:#0284c7; color:#38bdf8;">★ Тариф Pro (активен) · до 10 хостов</span>`;
   }
 
   return `
@@ -174,12 +176,20 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
         <div class="header-user">
           ${tierBadge}
+          ${isOwner ? `<button type="button" onclick="openProModal()" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">${planTier === 'pro' && !isTrial ? '★ Продлить Pro' : '🔥 Оформить Pro'}</button>` : ''}
           <span class="user-email">${user.name || user.email}</span>
           <a href="/auth/logout" class="btn-logout">Выйти</a>
         </div>
       </div>
 
       <div class="container">
+        ${paymentNotification ? `
+          <div style="background:#064e3b; border:1px solid #059669; color:#34d399; padding:14px 20px; border-radius:8px; margin-bottom:24px; font-size:14px; display:flex; align-items:center; justify-content:space-between;">
+            <span>${paymentNotification}</span>
+            <button onclick="this.parentElement.style.display='none'" style="background:none; border:none; color:#34d399; font-size:16px; cursor:pointer;">✕</button>
+          </div>
+        ` : ''}
+
         <!-- Блок Дашборды по хостам -->
         <div class="section-title">
           <span>Дашборды</span>
@@ -307,113 +317,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
       </div>
 
-      <!-- Модальное окно приглашения члена семьи -->
-      <div id="inviteModal" class="modal-overlay">
-        <div class="modal-box">
-          <div class="modal-title">Пригласить члена семьи</div>
-          <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">
-            Укажите адрес электронной почты Google. Человек сможет войти в этот кабинет со своего телефона через Google и смотреть дашборды.
-          </p>
-          <form onsubmit="submitInvite(event)">
-            <div class="form-group">
-              <label class="form-label" for="inviteEmailInput">Email аккаунта Google</label>
-              <input id="inviteEmailInput" class="form-input" type="email" placeholder="example@gmail.com" required autocomplete="off" />
-            </div>
-            <div id="inviteError" style="color:#f87171; font-size:13px; margin-bottom:12px; display:none;"></div>
-            <div class="modal-actions">
-              <button type="button" onclick="closeInviteModal()" class="btn-secondary">Отмена</button>
-              <button id="inviteSubmitBtn" type="submit" class="btn-primary">Пригласить</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- Модальное окно создания хоста -->
-      <div id="addDeviceModal" class="modal-overlay">
-        <div class="modal-box">
-          <div class="modal-title">Новая хост-программа</div>
-          <form id="addDeviceForm" onsubmit="submitAddDevice(event)">
-            <div class="form-group">
-              <label class="form-label" for="deviceNameInput">Название хоста</label>
-              <input id="deviceNameInput" class="form-input" type="text" placeholder="Домашний сервер" required autocomplete="off" />
-            </div>
-
-            <div id="addDeviceError" style="color: #f87171; font-size: 13px; margin-bottom: 12px; display: none;"></div>
-            <div class="modal-actions">
-              <button type="button" onclick="closeAddDeviceModal()" class="btn-secondary">Отмена</button>
-              <button id="addDeviceSubmitBtn" type="submit" class="btn-primary">Добавить хост</button>
-            </div>
-          </form>
-        </div>
-      </div>
-
-      <!-- Модальное окно подтверждения связки хоста (Pairing) -->
-      <div id="pairApproveModal" class="modal-overlay">
-        <div class="modal-box" style="max-width: 480px;">
-          <div class="modal-title" style="color:#38bdf8;">Запрос на привязку хоста</div>
-          <p style="font-size: 13px; color: #94a3b8; line-height: 1.5; margin-bottom: 16px;">
-            Хост-программа на вашем компьютере запрашивает привязку к этому аккаунту.
-          </p>
-          <div style="background:#0f1217; border:1px solid #283141; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
-            <div><strong>Новый хост:</strong> <span id="pairDeviceName">—</span></div>
-            <div style="margin-top:4px;"><strong>Платформа:</strong> <span id="pairOsInfo">—</span></div>
-            <div style="margin-top:4px;"><strong>Код проверки:</strong> <span id="pairCodeDisplay" style="color:#38bdf8; font-weight:700;">—</span></div>
-          </div>
-
-          <div id="pairConflictBlock" style="display:none; background:#18181b; border:1px solid #713f12; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
-            <div style="color:#fbbf24; font-weight:600; margin-bottom:6px;">⚠ На бесплатном тарифе доступен 1 хост</div>
-            <div style="color:#e4e4e7;">Сейчас подключен: <strong id="pairExistingName">—</strong> (<span id="pairExistingStatus">—</span>)</div>
-            <div style="color:#a1a1aa; font-size:12px; margin-top:6px;">
-              Переносов за последние 30 дней: <strong id="pairTransfersUsed">0</strong> из <strong>4</strong>.
-            </div>
-          </div>
-
-          <div id="pairError" style="color:#f87171; font-size:13px; margin-bottom:12px; display:none;"></div>
-
-          <div id="pairStandardActions" class="modal-actions">
-            <button type="button" onclick="closePairModal()" class="btn-secondary">Отклонить</button>
-            <button id="pairApproveBtn" type="button" onclick="confirmPairing('standard')" class="btn-primary">Подтвердить привязку</button>
-          </div>
-
-          <div id="pairConflictActions" class="modal-actions" style="display:none; flex-direction:column; gap:8px;">
-            <button id="pairTransferBtn" type="button" onclick="confirmPairing('transfer')" class="btn-primary" style="background:#0284c7; width:100%; padding:10px;">🔄 Перенести привязку на этот компьютер</button>
-            <button id="pairTrialBtn" type="button" onclick="confirmPairing('trial')" class="btn-primary" style="background:#7c3aed; width:100%; padding:10px; display:none;">✨ Оставить оба (Включить 60 дней Pro)</button>
-            <button type="button" onclick="closePairModal()" class="btn-secondary" style="width:100%; margin-top:4px;">Отмена</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Модальное окно с созданным ключом -->
-      <div id="keySuccessModal" class="modal-overlay">
-        <div class="modal-box" style="max-width: 480px;">
-          <div class="modal-title" style="color:#4ade80;">✓ Хост добавлен</div>
-          <p style="font-size: 13px; color: #94a3b8; text-align: left; line-height: 1.5;">
-            Скопируйте секретный ключ и вставьте его в программе <strong>MQTT Control RS</strong> в окне «Сервер» → «Облачный хаб»:
-          </p>
-          <div id="keyDisplayBox" class="key-display"></div>
-          <div style="font-size: 12px; color: #f59e0b; margin-bottom: 16px; text-align: left;">
-            ⚠ Ключ отображается только один раз. Обязательно скопируйте его сейчас.
-          </div>
-          <div class="modal-actions" style="justify-content: space-between;">
-            <button id="copyKeyBtn" type="button" onclick="copyCreatedKey()" class="btn-secondary">📋 Скопировать ключ</button>
-            <button type="button" onclick="location.reload()" class="btn-primary">Готово</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Модальное окно QR-кода -->
-      <div id="qrModal" class="modal-overlay">
-        <div class="modal-box" style="text-align:center; max-width:360px;">
-          <h3 id="qrTitle" style="color:#f8fafc; font-size:16px; margin-bottom:12px;">Дашборд</h3>
-          <p style="color:#94a3b8; font-size:13px; margin-bottom:18px;">Наведите камеру смартфона для быстрого входа:</p>
-          <div style="background:#fff; padding:12px; border-radius:8px; display:inline-block; margin-bottom:18px;">
-            <img id="qrImage" src="" alt="QR" style="display:block; width:200px; height:200px;">
-          </div>
-          <div>
-            <button onclick="closeQr()" class="btn-secondary" style="width:100%;">Закрыть</button>
-          </div>
-        </div>
-      </div>
+      ${renderCabinetModals()}
 
       ${renderCabinetScripts(currentWsId)}
     </body>

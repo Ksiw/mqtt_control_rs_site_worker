@@ -267,6 +267,64 @@ export function renderCabinetScripts(currentWsId: string): string {
         document.getElementById('qrModal').style.display = 'none';
       }
 
+      function openProModal() {
+        const modal = document.getElementById('proModal');
+        if (modal) {
+          const errDiv = document.getElementById('proModalError');
+          if (errDiv) errDiv.style.display = 'none';
+          modal.style.display = 'flex';
+        }
+      }
+
+      function closeProModal() {
+        const modal = document.getElementById('proModal');
+        if (modal) modal.style.display = 'none';
+      }
+
+      async function submitProPayment() {
+        const btn = document.getElementById('proPayBtn');
+        const errDiv = document.getElementById('proModalError');
+        if (errDiv) errDiv.style.display = 'none';
+
+        const periodInput = document.querySelector('input[name="pro_period"]:checked');
+        const duration = periodInput ? periodInput.value : 'month';
+
+        if (btn) {
+          btn.disabled = true;
+          btn.textContent = 'Создание счёта...';
+        }
+
+        try {
+          const res = await fetch('/api/v1/billing/create-invoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ duration })
+          });
+          const data = await res.json();
+          if (data.status === 'ok' && data.invoice_url) {
+            window.location.href = data.invoice_url;
+          } else {
+            if (errDiv) {
+              errDiv.textContent = data.message || 'Ошибка создания счёта на оплату';
+              errDiv.style.display = 'block';
+            }
+            if (btn) {
+              btn.disabled = false;
+              btn.textContent = 'Перейти к оплате ↗';
+            }
+          }
+        } catch (err) {
+          if (errDiv) {
+            errDiv.textContent = 'Сетевая ошибка: ' + (err.message || err);
+            errDiv.style.display = 'block';
+          }
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Перейти к оплате ↗';
+          }
+        }
+      }
+
       // Автоматическое обновление данных личного кабинета без ручного F5
       let lastCabinetHash = '';
       async function pollCabinetState() {

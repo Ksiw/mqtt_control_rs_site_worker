@@ -159,6 +159,14 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       }
     }
 
+    const paymentQuery = c.req.query('payment');
+    let paymentNotification: string | undefined;
+    if (paymentQuery === 'success') {
+      paymentNotification = '✓ Оплата успешно принята! Ваш тариф Pro активирован.';
+    } else if (paymentQuery === 'cancel') {
+      paymentNotification = 'Оплата была отменена.';
+    }
+
     return c.html(renderCabinetHtml({
       user,
       currentOrg,
@@ -172,8 +180,17 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       maxMembers,
       isOwner,
       isTrial,
-      daysLeft
+      daysLeft,
+      paymentNotification
     }));
+  }
+
+  const paymentQuery = c.req.query('payment');
+  let paymentNotification: string | undefined;
+  if (paymentQuery === 'success') {
+    paymentNotification = '✓ Оплата успешно принята! Ваш тариф Pro активирован.';
+  } else if (paymentQuery === 'cancel') {
+    paymentNotification = 'Оплата была отменена.';
   }
 
   return c.html(renderCabinetHtml({
@@ -187,7 +204,8 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     planTier,
     maxDevices,
     maxMembers,
-    isOwner: true
+    isOwner: true,
+    paymentNotification
   }));
 };
 

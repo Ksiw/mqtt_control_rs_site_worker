@@ -6,6 +6,7 @@ import { authRouter } from './auth';
 import { cabinetRouter } from './cabinet';
 import { familyRouter } from './family';
 import { pairRouter } from './pairing';
+import { billingRouter } from './billing';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -14,6 +15,7 @@ app.route('/auth', authRouter);
 app.route('/api/v1/device', deviceRouter);
 app.route('/api/v1/family', familyRouter);
 app.route('/api/v1/pair', pairRouter);
+app.route('/api/v1/billing', billingRouter);
 app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 
