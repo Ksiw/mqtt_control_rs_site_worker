@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
 import { Env, Device } from './types';
+import { getCurrentUser } from './cabinet';
 
 export const proxyRouter = new Hono<{ Bindings: Env }>();
 
@@ -29,22 +30,49 @@ function buildCleanHeaders(incoming: Headers, targetHost: string): Headers {
 
 
 const handleDashboardProxy = async (c: any) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.redirect('/cabinet');
+  }
+
   const { org_slug, ws_slug, dash_id } = c.req.param();
 
-  // 1. Поиск рабочего пространства и дашборда
+  // 1. Поиск рабочего пространства и дашборда с проверкой членства в организации
   const query = `
     SELECT d.id as dash_id, d.slug as dash_path, d.device_id, w.id as workspace_id
     FROM dashboards d
     JOIN workspaces w ON d.workspace_id = w.id
     JOIN organizations o ON w.org_id = o.id
+    JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
     WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
     LIMIT 1
   `;
   const dashInfo = (await (c.env.DB.prepare(query) as any)
-    .bind(org_slug, ws_slug, dash_id, `%${dash_id}%`)
+    .bind(user.id, org_slug, ws_slug, dash_id, `%${dash_id}%`)
     .first()) as { dash_id: string; dash_path: string; device_id?: string; workspace_id: string } | null;
 
   if (!dashInfo) {
+    const exists = await (c.env.DB.prepare(`
+      SELECT 1 FROM dashboards d
+      JOIN workspaces w ON d.workspace_id = w.id
+      JOIN organizations o ON w.org_id = o.id
+      WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
+      LIMIT 1
+    `) as any).bind(org_slug, ws_slug, dash_id, `%${dash_id}%`).first();
+
+    if (exists) {
+      return c.html(`
+        <!DOCTYPE html>
+        <html lang="ru">
+        <head><meta charset="utf-8"><title>Доступ ограничен</title>
+        <style>body{font-family:sans-serif;background:#0f172a;color:#f8fafc;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;}
+        .card{background:#1e293b;padding:32px;border-radius:12px;border:1px solid #334155;text-align:center;max-width:440px;}
+        h1{font-size:20px;color:#ef4444;margin:0 0 12px;}p{font-size:14px;color:#94a3b8;line-height:1.5;margin:0;}
+        a{color:#38bdf8;text-decoration:none;margin-top:16px;display:inline-block;}
+        </style></head>
+        <body><div class="card"><h1>Доступ ограничен</h1><p>У вас нет доступа к этой организации или рабочему пространству. Войдите с аккаунта, приглашенного владельцем.</p><a href="/cabinet">Вернуться в кабинет</a></div></body></html>
+      `, 403);
+    }
     return c.text('Дашборд или рабочее пространство не найдено', 404);
   }
 
@@ -196,6 +224,11 @@ proxyRouter.all('/view/:org_slug/:ws_slug/:dash_id/*', handleDashboardProxy);
 
 // Прямая поддержка подзапросов операторского интерфейса (/operator/view, /operator/events, /operator/command)
 proxyRouter.all('/operator/*', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ error: 'unauthorized', message: 'Требуется авторизация в аккаунте' }, 401);
+  }
+
   let wsId: string | null = null;
   let devId: string | null = null;
   const referer = c.req.header('Referer');
@@ -208,11 +241,12 @@ proxyRouter.all('/operator/*', async (c) => {
         FROM dashboards d
         JOIN workspaces w ON d.workspace_id = w.id
         JOIN organizations o ON w.org_id = o.id
+        JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
         WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
         LIMIT 1
       `;
       const found = (await (c.env.DB.prepare(query) as any)
-        .bind(org_slug, ws_slug, dash_id, `%${dash_id}%`)
+        .bind(user.id, org_slug, ws_slug, dash_id, `%${dash_id}%`)
         .first()) as { device_id?: string; workspace_id: string } | null;
       if (found) {
         wsId = found.workspace_id;
@@ -221,15 +255,24 @@ proxyRouter.all('/operator/*', async (c) => {
     }
   }
 
-  if (!devId) {
-    devId = getCookie(c, 'last_dev_id') || null;
-  }
   if (!wsId) {
-    wsId = getCookie(c, 'last_ws_id') || null;
+    const candidateWs = getCookie(c, 'last_ws_id');
+    if (candidateWs) {
+      const allowed = await c.env.DB.prepare(`
+        SELECT w.id FROM workspaces w
+        JOIN organization_members m ON m.org_id = w.org_id
+        WHERE w.id = ? AND m.user_id = ?
+        LIMIT 1
+      `).bind(candidateWs, user.id).first();
+      if (allowed) {
+        wsId = candidateWs;
+        devId = getCookie(c, 'last_dev_id') || null;
+      }
+    }
   }
 
   if (!wsId) {
-    return c.json({ error: 'No active workspace found for operator request', message: 'Рабочее пространство не определено' }, 404);
+    return c.json({ error: 'No active workspace found for operator request', message: 'Рабочее пространство не определено или нет доступа' }, 404);
   }
 
   let targetPath = c.req.path;
