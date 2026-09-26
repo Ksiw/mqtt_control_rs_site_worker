@@ -128,14 +128,14 @@ export function renderCabinetModals(): string {
               <input type="radio" name="pro_period" value="month" checked style="margin-right:8px;">
               <span style="font-weight:600; color:#f8fafc;">1 месяц</span>
             </div>
-            <span style="font-weight:700; color:#38bdf8;">$10.00</span>
+            <span style="font-weight:700; color:#38bdf8;">$12.00</span>
           </label>
 
           <label style="display:flex; align-items:center; justify-content:space-between; background:#0f1217; border:1px solid #0284c7; padding:14px; border-radius:8px; cursor:pointer;">
             <div>
               <input type="radio" name="pro_period" value="year" style="margin-right:8px;">
               <span style="font-weight:600; color:#f8fafc;">1 год</span>
-              <span style="background:#0369a1; color:#e0f2fe; font-size:11px; padding:2px 6px; border-radius:4px; margin-left:6px;">2 месяца в подарок</span>
+              <span style="background:#0369a1; color:#e0f2fe; font-size:11px; padding:2px 6px; border-radius:4px; margin-left:6px;">Скидка 30%</span>
             </div>
             <span style="font-weight:700; color:#38bdf8;">$100.00</span>
           </label>

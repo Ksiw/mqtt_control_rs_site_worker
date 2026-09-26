@@ -50,10 +50,10 @@ billingRouter.post('/create-invoice', async (c) => {
   };
 
   const isYear = duration === 'year';
-  const amountUsd = isYear ? 100.0 : 10.0;
+  const amountUsd = isYear ? 100.0 : 12.0;
   const durationDays = isYear ? 365 : 30;
   const planDescription = isYear
-    ? 'MQTT Control RS Pro (1 год, скидка 17%)'
+    ? 'MQTT Control RS Pro (1 год, скидка 30%)'
     : 'MQTT Control RS Pro (1 месяц)';
 
   // Находим организацию пользователя (требуются права владельца или админа)
