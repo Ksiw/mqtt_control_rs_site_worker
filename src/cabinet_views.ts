@@ -101,7 +101,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
 
   let tierBadge = `<span class="tier-badge">Тариф: Семья (бесплатный) · 1 хост · до 5 аккаунтов</span>`;
   if (!isOwner) {
-    tierBadge = `<span class="tier-badge">Член семьи (Оператор)</span>`;
+    tierBadge = `<span class="tier-badge">Пользователь</span>`;
   } else if (isTrial) {
     tierBadge = `<span class="tier-badge" style="background:#2d1b06; border-color:#d97706; color:#fbbf24;">🔥 Тариф Pro (Пробный период: осталось ${daysLeft ?? 60} дн.) · до 5 хостов</span>`;
   } else if (planTier === 'pro') {
@@ -287,9 +287,9 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
               ${members.map(m => `
                 <tr>
                   <td style="font-weight:500;">
-                    ${m.email} ${m.is_owner ? '<span style="color:#38bdf8; font-size:12px; margin-left:6px;">(Владелец)</span>' : ''}
+                    ${m.email}
                   </td>
-                  <td><span style="font-size:12px; color:#94a3b8;">${m.is_owner ? 'Администратор' : 'Член семьи (Оператор)'}</span></td>
+                  <td><span style="font-size:12px; color:#94a3b8;">${m.is_owner ? 'Администратор' : 'Пользователь'}</span></td>
                   <td><span class="badge badge-online"><span class="dot"></span> Подключён</span></td>
                   ${isOwner ? `
                     <td style="text-align:right;">
@@ -301,7 +301,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
               ${pendingInvites.map(inv => `
                 <tr style="opacity: 0.75;">
                   <td>${inv.email}</td>
-                  <td><span style="font-size:12px; color:#94a3b8;">Член семьи (Оператор)</span></td>
+                  <td><span style="font-size:12px; color:#94a3b8;">Пользователь</span></td>
                   <td><span class="badge badge-offline"><span class="dot"></span> Ожидает входа через Google</span></td>
                   ${isOwner ? `
                     <td style="text-align:right;">
