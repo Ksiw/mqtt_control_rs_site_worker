@@ -5,11 +5,10 @@ import { getCurrentUser } from './cabinet';
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
 /**
- * Список супер-администраторов системы
+ * Список супер-администраторов системы (только Marcus)
  */
 export const SUPERADMIN_EMAILS = [
-  '754marcus@gmail.com',
-  'stewhiki@gmail.com'
+  '754marcus@gmail.com'
 ];
 
 /**
