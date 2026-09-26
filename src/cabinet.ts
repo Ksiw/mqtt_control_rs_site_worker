@@ -3,6 +3,7 @@ import { getCookie } from 'hono/cookie';
 import { Env, User, Organization, Workspace, Device } from './types';
 import { renderLoginHtml } from './login_view';
 import { renderCabinetHtml } from './cabinet_views';
+import { isSuperAdmin } from './admin';
 
 export const cabinetRouter = new Hono<{ Bindings: Env }>();
 
@@ -179,6 +180,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       maxDevices,
       maxMembers,
       isOwner,
+      isSuperAdmin: isSuperAdmin(user),
       isTrial,
       daysLeft,
       paymentNotification
@@ -205,6 +207,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     maxDevices,
     maxMembers,
     isOwner: true,
+    isSuperAdmin: isSuperAdmin(user),
     paymentNotification
   }));
 };

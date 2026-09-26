@@ -1,6 +1,7 @@
 import { Device, Organization, User, Workspace } from './types';
 import { renderCabinetScripts } from './cabinet_scripts';
 import { renderCabinetModals } from './cabinet_modals';
+import { renderAdminSection, renderAdminScripts } from './admin_view';
 export { renderLoginHtml } from './login_view';
 
 function renderDashCard(d: any): string {
@@ -85,13 +86,14 @@ interface CabinetViewProps {
   maxDevices: number;
   maxMembers: number;
   isOwner: boolean;
+  isSuperAdmin?: boolean;
   isTrial?: boolean;
   daysLeft?: number;
   paymentNotification?: string;
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
-  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isTrial, daysLeft, paymentNotification } = props;
+  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isSuperAdmin, isTrial, daysLeft, paymentNotification } = props;
   const currentWsId = workspaces[0]?.id || '';
   const totalAccounts = members.length + pendingInvites.length;
   const canAddDevice = devices.length < maxDevices && isOwner;
@@ -312,14 +314,18 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           </table>
         </div>
 
+        <!-- Панель супер-администратора (если есть права) -->
+        ${renderAdminSection(Boolean(isSuperAdmin))}
+
         <div style="text-align:center; padding:20px 0 8px; font-size:12px; color:#475569;">
-          MQTT Control RS Cloud Hub · v1.1.0
+          MQTT Control RS Cloud Hub · v1.2.0
         </div>
       </div>
 
       ${renderCabinetModals()}
 
       ${renderCabinetScripts(currentWsId)}
+      ${renderAdminScripts(Boolean(isSuperAdmin))}
     </body>
     </html>
   `;
