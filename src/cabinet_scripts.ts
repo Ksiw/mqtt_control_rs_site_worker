@@ -1,7 +1,8 @@
 export function renderCabinetScripts(currentWsId: string): string {
+  const workspaceIdLiteral = JSON.stringify(currentWsId).replace(/</g, '\\u003c');
   return `
     <script>
-      let currentWorkspaceId = '${currentWsId}';
+      let currentWorkspaceId = ${workspaceIdLiteral};
       let createdDeviceKey = '';
       let activePairCode = '';
 

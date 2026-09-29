@@ -143,6 +143,16 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
     <script>
       let adminCachedUsers = [];
 
+      function escapeAdminHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, char => ({
+          '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        })[char]);
+      }
+
+      function adminJsArg(value) {
+        return escapeAdminHtml(JSON.stringify(String(value ?? '')));
+      }
+
       function renderUserRows(users) {
         const tbody = document.getElementById('adminUsersBody');
         if (!tbody) return;
@@ -166,23 +176,23 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
           return \`
             <tr>
               <td>
-                <div style="font-weight:600; color:#f8fafc;">\${u.email}</div>
-                <div style="font-size:12px; color:#64748b;">\${u.name || '—'}</div>
+                <div style="font-weight:600; color:#f8fafc;">\${escapeAdminHtml(u.email)}</div>
+                <div style="font-size:12px; color:#64748b;">\${escapeAdminHtml(u.name || '—')}</div>
               </td>
               <td>\${badge}</td>
-              <td style="color:#94a3b8; font-size:13px;">до \${u.max_devices} хостов</td>
+              <td style="color:#94a3b8; font-size:13px;">до \${escapeAdminHtml(u.max_devices)} хостов</td>
               <td style="color:#cbd5e1; font-size:13px;">\${endDate}</td>
               <td style="text-align:right; white-space:nowrap;">
                 \${isEnterprise ? \`
-                  <button onclick="openEnterpriseModal('\${u.email}', \${u.max_devices})" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Изменить лимит хостов или срок">Изменить Enterprise</button>
-                  <button onclick="revokeAdminLicense('\${u.email}')" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
+                  <button onclick="openEnterpriseModal(\${adminJsArg(u.email)}, \${Number(u.max_devices) || 0})" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Изменить лимит хостов или срок">Изменить Enterprise</button>
+                  <button onclick="revokeAdminLicense(\${adminJsArg(u.email)})" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
                 \` : isPro ? \`
-                  <button onclick="quickGrant('\${u.email}', 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;" title="Продлить Pro на 1 месяц">+1 мес Pro</button>
-                  <button onclick="openEnterpriseModal('\${u.email}')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Перевести на Enterprise">Enterprise</button>
-                  <button onclick="revokeAdminLicense('\${u.email}')" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
+                  <button onclick="quickGrant(\${adminJsArg(u.email)}, 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;" title="Продлить Pro на 1 месяц">+1 мес Pro</button>
+                  <button onclick="openEnterpriseModal(\${adminJsArg(u.email)})" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Перевести на Enterprise">Enterprise</button>
+                  <button onclick="revokeAdminLicense(\${adminJsArg(u.email)})" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
                 \` : \`
-                  <button onclick="quickGrant('\${u.email}', 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;">+1 мес Pro</button>
-                  <button onclick="openEnterpriseModal('\${u.email}')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe;">Enterprise</button>
+                  <button onclick="quickGrant(\${adminJsArg(u.email)}, 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;">+1 мес Pro</button>
+                  <button onclick="openEnterpriseModal(\${adminJsArg(u.email)})" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe;">Enterprise</button>
                 \`}
               </td>
             </tr>

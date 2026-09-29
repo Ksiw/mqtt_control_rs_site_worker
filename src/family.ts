@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env, User } from './types';
+import { Env, getEffectivePlanTier } from './types';
 import { getCurrentUser } from './cabinet';
 
 export const familyRouter = new Hono<{ Bindings: Env }>();
@@ -23,13 +23,13 @@ familyRouter.post('/invite', async (c) => {
 
   // Получаем организацию текущего пользователя
   const orgMember = await c.env.DB.prepare(`
-    SELECT o.id as org_id, o.owner_user_id, m.role, s.plan_tier
+    SELECT o.id as org_id, o.owner_user_id, m.role, s.plan_tier, s.status, s.current_period_end
     FROM organization_members m
     JOIN organizations o ON m.org_id = o.id
     LEFT JOIN subscriptions s ON s.org_id = o.id
     WHERE m.user_id = ?
     LIMIT 1
-  `).bind(user.id).first<{ org_id: string; owner_user_id: string; role: string; plan_tier: string }>();
+  `).bind(user.id).first<{ org_id: string; owner_user_id: string; role: string; plan_tier: string; status: string; current_period_end: number }>();
 
   if (!orgMember || (orgMember.role !== 'owner' && orgMember.role !== 'admin')) {
     return c.json({ status: 'error', message: 'Только владелец может приглашать пользователей' }, 403);
@@ -40,7 +40,8 @@ familyRouter.post('/invite', async (c) => {
   }
 
   // Проверяем лимит пользователей для тарифа (для free — 5)
-  const maxAccounts = orgMember.plan_tier === 'pro' ? 15 : orgMember.plan_tier === 'enterprise' ? 9999 : 5;
+  const effectiveTier = getEffectivePlanTier(orgMember.plan_tier, orgMember.status, orgMember.current_period_end, Math.floor(Date.now() / 1000));
+  const maxAccounts = effectiveTier === 'pro' ? 15 : effectiveTier === 'enterprise' ? 9999 : 5;
 
   const currentMembers = await c.env.DB.prepare(
     'SELECT COUNT(*) as count FROM organization_members WHERE org_id = ?'

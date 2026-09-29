@@ -76,10 +76,10 @@ billingRouter.post('/create-invoice', async (c) => {
   }
 
   const apiKey = c.env.NOWPAYMENTS_API_KEY;
-  if (!apiKey) {
+  if (!apiKey || !c.env.NOWPAYMENTS_IPN_SECRET) {
     return c.json({
       status: 'error',
-      message: 'Платежный шлюз временно не настроен на сервере (отсутствует NOWPAYMENTS_API_KEY).'
+      message: 'Платежный шлюз временно не настроен на сервере.'
     }, 503);
   }
 
@@ -156,22 +156,17 @@ billingRouter.post('/webhook', async (c) => {
     return c.text('Invalid JSON', 400);
   }
 
-  // Проверка криптографической подписи IPN, если задан секрет
+  // Без секрета нельзя установить отправителя уведомления об оплате.
   const ipnSecret = c.env.NOWPAYMENTS_IPN_SECRET;
-  if (ipnSecret) {
-    if (!signature) {
-      console.warn('[Billing WebHook] Missing x-nowpayments-sig header');
-      return c.text('Signature required', 401);
-    }
+  if (!ipnSecret) return c.text('Payment webhook is not configured', 503);
+  if (!signature) return c.text('Signature required', 401);
 
-    const sortedJson = JSON.stringify(sortObjectKeys(payload));
-    const expectedSigSorted = await hmacSha512Hex(ipnSecret, sortedJson);
-    const expectedSigRaw = await hmacSha512Hex(ipnSecret, bodyText);
-
-    if (signature !== expectedSigSorted && signature !== expectedSigRaw) {
-      console.warn('[Billing WebHook] Invalid signature');
-      return c.text('Invalid signature', 403);
-    }
+  const sortedJson = JSON.stringify(sortObjectKeys(payload));
+  const expectedSigSorted = await hmacSha512Hex(ipnSecret, sortedJson);
+  const expectedSigRaw = await hmacSha512Hex(ipnSecret, bodyText);
+  if (signature !== expectedSigSorted && signature !== expectedSigRaw) {
+    console.warn('[Billing WebHook] Invalid signature');
+    return c.text('Invalid signature', 403);
   }
 
   const { payment_status, order_id, actually_paid, pay_currency, payment_id } = payload;
@@ -191,49 +186,50 @@ billingRouter.post('/webhook', async (c) => {
     org_id: string;
     duration_days: number;
     payment_status: string;
+    applied_at: number | null;
   }>();
+  if (!payment) return c.text('Unknown order', 404);
 
-  // Обновляем статус платежа
-  if (payment) {
+  // Промежуточные уведомления сохраняем, не откатывая уже учтённый платёж.
+  if (payment_status !== 'finished' && payment_status !== 'confirmed') {
     await c.env.DB.prepare(`
       UPDATE payments
       SET payment_status = ?, pay_currency = COALESCE(?, pay_currency), updated_at = ?
-      WHERE id = ?
+      WHERE id = ? AND applied_at IS NULL
     `).bind(payment_status, pay_currency || null, now, payment.id).run();
+    return c.json({ status: 'ok' });
   }
 
-  // Если оплата успешно завершена (finished или confirmed в блокчейне)
-  if (payment_status === 'finished' || payment_status === 'confirmed') {
-    const orgId = payment?.org_id || order_id.split('_')[1];
+  if (payment.applied_at !== null) return c.json({ status: 'ok' });
 
-    if (orgId) {
-      const isYear = (payment?.duration_days ?? 0) >= 365 || order_id.includes('year');
+  const currentSub = await c.env.DB.prepare(
+    'SELECT plan_tier, current_period_end FROM subscriptions WHERE org_id = ?'
+  ).bind(payment.org_id).first<{ plan_tier: string; current_period_end: number }>();
+  if (!currentSub) return c.text('Subscription not found', 500);
 
-      // Запрашиваем текущую подписку, чтобы сохранить календарное число и не сжечь остаток
-      const currentSub = await c.env.DB.prepare(
-        'SELECT plan_tier, current_period_end FROM subscriptions WHERE org_id = ?'
-      ).bind(orgId).first<{ plan_tier: string; current_period_end: number }>();
+  const isYear = payment.duration_days >= 365;
+  const targetPeriodEnd = calculateNextPeriodEnd(
+    currentSub.current_period_end, currentSub.plan_tier, isYear, now
+  );
 
-      const targetPeriodEnd = calculateNextPeriodEnd(
-        currentSub?.current_period_end,
-        currentSub?.plan_tier,
-        isYear,
-        now
-      );
-
-      await c.env.DB.prepare(`
-        UPDATE subscriptions
-        SET plan_tier = 'pro',
-            status = 'active',
-            max_devices = 3,
-            max_dashboards = 50,
-            current_period_end = ?
-        WHERE org_id = ?
-      `).bind(targetPeriodEnd, orgId).run();
-
-      console.log(`[Billing] Pro plan successfully activated/extended for org ${orgId} until ${targetPeriodEnd} (calendar sync, isYear=${isYear})`);
-    }
-  }
+  // D1 batch выполняется одной транзакцией. Условие applied_at защищает от
+  // повторного webhook и одновременных запросов для одного счёта.
+  await c.env.DB.batch([
+    c.env.DB.prepare(`
+      UPDATE subscriptions
+      SET plan_tier = 'pro', status = 'active', max_devices = 3,
+          max_dashboards = 50, current_period_end = ?
+      WHERE org_id = ? AND EXISTS (
+        SELECT 1 FROM payments WHERE id = ? AND applied_at IS NULL
+      )
+    `).bind(targetPeriodEnd, payment.org_id, payment.id),
+    c.env.DB.prepare(`
+      UPDATE payments
+      SET payment_status = ?, pay_currency = COALESCE(?, pay_currency),
+          applied_at = ?, updated_at = ?
+      WHERE id = ? AND applied_at IS NULL
+    `).bind(payment_status, pay_currency || null, now, now, payment.id)
+  ]);
 
   return c.json({ status: 'ok' });
 });

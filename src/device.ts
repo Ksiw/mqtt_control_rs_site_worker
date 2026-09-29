@@ -1,8 +1,44 @@
-import { Hono } from 'hono';
+import { Hono, Context } from 'hono';
 import { Env, HeartbeatPayload, Device } from './types';
-import { sha256Hex } from './crypto';
+import { sha256Hex, verifyHmacSha256 } from './crypto';
 
 export const deviceRouter = new Hono<{ Bindings: Env }>();
+
+function prefixMatches(supplied: string, stored: string): boolean {
+  return supplied.startsWith(stored) || stored.startsWith(supplied);
+}
+
+async function authenticateSignedDevice(
+  c: Context<{ Bindings: Env }>, body: string, missingStatus: 401 | 404 = 401
+): Promise<{ device: Device; error?: never } | { device?: never; error: Response }> {
+  const prefix = c.req.header('X-Device-Prefix');
+  const deviceKey = c.req.header('X-Device-Key');
+  const timestampStr = c.req.header('X-Timestamp');
+  const signature = c.req.header('X-Signature');
+  if (!prefix || !deviceKey || !timestampStr || !signature) {
+    return { error: c.json({ status: 'error', message: 'Отсутствуют обязательные заголовки безопасности' }, 401) };
+  }
+
+  const timestamp = Number(timestampStr);
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(timestamp) || Math.abs(now - timestamp) > 120) {
+    return { error: c.json({ status: 'error', message: 'Метка времени запроса устарела' }, 401) };
+  }
+
+  const keyHash = await sha256Hex(deviceKey);
+  const device = await c.env.DB.prepare(
+    'SELECT * FROM devices WHERE key_hash = ? LIMIT 1'
+  ).bind(keyHash).first<Device>();
+  if (!device || !prefixMatches(prefix, device.key_prefix)) {
+    return { error: c.json({ status: 'error', message: 'Устройство не найдено или доступ отозван' }, missingStatus) };
+  }
+
+  if (!/^[a-f0-9]{64}$/i.test(signature) ||
+      !await verifyHmacSha256(deviceKey, timestampStr + body, signature)) {
+    return { error: c.json({ status: 'error', message: 'Недействительная подпись запроса' }, 401) };
+  }
+  return { device };
+}
 
 /**
  * Регулярное подтверждение связи от приложения mqtt_control_rs (Heartbeat)
@@ -10,45 +46,16 @@ export const deviceRouter = new Hono<{ Bindings: Env }>();
  */
 deviceRouter.post('/heartbeat', async (c) => {
   try {
-    const prefix = c.req.header('X-Device-Prefix');
-    const timestampStr = c.req.header('X-Timestamp');
-    const signature = c.req.header('X-Signature');
-
-    if (!prefix || !timestampStr || !signature) {
-      return c.json({ status: 'error', message: 'Отсутствуют обязательные заголовки безопасности' }, 401);
-    }
-
-    const timestamp = parseInt(timestampStr, 10);
     const now = Math.floor(Date.now() / 1000);
-
-    // Защита от replay-атак: допускаем расхождение до 120 секунд на рассинхрон часов
-    if (Math.abs(now - timestamp) > 120) {
-      return c.json({ status: 'error', message: 'Метка времени запроса устарела' }, 401);
-    }
-
     const bodyText = await c.req.text();
+    const auth = await authenticateSignedDevice(c, bodyText);
+    if (auth.error) return auth.error;
+    const device = auth.device;
     let payload: HeartbeatPayload;
     try {
       payload = JSON.parse(bodyText);
     } catch (e) {
       return c.json({ status: 'error', message: 'Некорректный формат JSON' }, 400);
-    }
-
-    // 1. Быстрый поиск устройства по префиксу ключа
-    const device = await c.env.DB.prepare(
-      'SELECT * FROM devices WHERE key_prefix = ? OR key_prefix LIKE (? || \'%\') OR ? LIKE (key_prefix || \'%\') LIMIT 1'
-    ).bind(prefix, prefix, prefix).first<Device>();
-
-    if (!device) {
-      return c.json({ status: 'error', message: 'Устройство не найдено или доступ отозван' }, 404);
-    }
-
-    const deviceKey = c.req.header('X-Device-Key');
-    if (deviceKey) {
-      const keyHash = await sha256Hex(deviceKey);
-      if (keyHash !== device.key_hash) {
-        return c.json({ status: 'error', message: 'Недействительный ключ устройства' }, 401);
-      }
     }
 
     // 2. Обновляем статус устройства в базе данных D1
@@ -74,16 +81,20 @@ deviceRouter.post('/heartbeat', async (c) => {
 
     // 3. Автоматическая синхронизация дашбордов конкретного устройства
     if (Array.isArray(payload.dashboards)) {
-      const activeIds = payload.dashboards.filter(d => d && d.id).map(d => `'${device.id}_${d.id}'`);
+      if (payload.dashboards.length > 500) {
+        return c.json({ status: 'error', message: 'Слишком много дашбордов' }, 400);
+      }
+      const validDashboards = payload.dashboards.filter(d => d && typeof d.id === 'string' && d.id.length > 0);
+      const activeIds = validDashboards.map(d => `${device.id}_${d.id}`);
       if (activeIds.length > 0) {
+        const placeholders = activeIds.map(() => '?').join(',');
         batchQueries.push(
           c.env.DB.prepare(`
             DELETE FROM dashboards 
-            WHERE device_id = ? AND id NOT IN (${activeIds.join(',')})
-          `).bind(device.id)
+            WHERE device_id = ? AND id NOT IN (${placeholders})
+          `).bind(device.id, ...activeIds)
         );
-        for (const d of payload.dashboards) {
-          if (!d || !d.id) continue;
+        for (const d of validDashboards) {
           const dashId = `${device.id}_${d.id}`;
           batchQueries.push(
             c.env.DB.prepare(`
@@ -123,39 +134,10 @@ deviceRouter.post('/heartbeat', async (c) => {
  */
 deviceRouter.post('/unlink', async (c) => {
   try {
-    const prefix = c.req.header('X-Device-Prefix');
-    const timestampStr = c.req.header('X-Timestamp');
-    const signature = c.req.header('X-Signature');
-
-    if (!prefix || !timestampStr || !signature) {
-      return c.json({ status: 'error', message: 'Отсутствуют обязательные заголовки безопасности' }, 401);
-    }
-
-    const timestamp = parseInt(timestampStr, 10);
-    const now = Math.floor(Date.now() / 1000);
-
-    // Защита от replay-атак (допускаем расхождение до 120 секунд)
-    if (Math.abs(now - timestamp) > 120) {
-      return c.json({ status: 'error', message: 'Метка времени запроса устарела' }, 401);
-    }
-
-    // 1. Поиск устройства по префиксу ключа
-    const device = await c.env.DB.prepare(
-      'SELECT * FROM devices WHERE key_prefix = ? OR key_prefix LIKE (? || \'%\') OR ? LIKE (key_prefix || \'%\') LIMIT 1'
-    ).bind(prefix, prefix, prefix).first<Device>();
-
-    if (!device) {
-      // Уже удалено или не существует — считаем успехом отвязки
-      return c.json({ status: 'ok', message: 'Устройство уже отвязано или отсутствует' }, 200);
-    }
-
-    const deviceKey = c.req.header('X-Device-Key');
-    if (deviceKey) {
-      const keyHash = await sha256Hex(deviceKey);
-      if (keyHash !== device.key_hash) {
-        return c.json({ status: 'error', message: 'Недействительный ключ устройства' }, 401);
-      }
-    }
+    const bodyText = await c.req.text();
+    const auth = await authenticateSignedDevice(c, bodyText, 404);
+    if (auth.error) return auth.error;
+    const device = auth.device;
 
     // 2. Удаление связанных дашбордов и самого устройства из БД D1 (освобождает machine_id)
     await c.env.DB.batch([
@@ -185,16 +167,11 @@ deviceRouter.get('/tunnel-ws', async (c) => {
   }
 
   const device = await c.env.DB.prepare(
-    'SELECT * FROM devices WHERE key_prefix = ? OR key_prefix LIKE (? || \'%\') OR ? LIKE (key_prefix || \'%\') LIMIT 1'
-  ).bind(prefix, prefix, prefix).first<Device>();
+    'SELECT * FROM devices WHERE key_hash = ? LIMIT 1'
+  ).bind(await sha256Hex(deviceKey)).first<Device>();
 
-  if (!device) {
+  if (!device || !prefixMatches(prefix, device.key_prefix)) {
     return c.text('Устройство не найдено или доступ отозван', 404);
-  }
-
-  const keyHash = await sha256Hex(deviceKey);
-  if (keyHash !== device.key_hash) {
-    return c.text('Недействительный ключ устройства', 401);
   }
 
   const now = Math.floor(Date.now() / 1000);
@@ -207,4 +184,3 @@ deviceRouter.get('/tunnel-ws', async (c) => {
   const doUrl = new URL('/tunnel/device-ws', 'https://tunnel.internal');
   return stub.fetch(new Request(doUrl.toString(), c.req.raw));
 });
-

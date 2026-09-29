@@ -111,3 +111,18 @@ export function getTierDeviceLimit(
   }
   return 1;
 }
+
+/** Тариф, права которого действуют в данный момент. */
+export function getEffectivePlanTier(
+  planTier: string | null | undefined,
+  status: string | null | undefined,
+  currentPeriodEnd: number | null | undefined,
+  now: number
+): 'free' | 'pro' | 'enterprise' {
+  if ((planTier === 'pro' || planTier === 'enterprise') &&
+      (status === 'active' || status === 'trialing') &&
+      typeof currentPeriodEnd === 'number' && currentPeriodEnd > now) {
+    return planTier;
+  }
+  return 'free';
+}

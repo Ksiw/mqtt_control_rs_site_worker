@@ -7,6 +7,7 @@
     "dev": "wrangler dev",
     "build": "tsc --noEmit",
     "check": "tsc --noEmit",
+    "test": "node tests/security.test.mjs",
     "deploy": "wrangler deploy",
     "d1:local": "wrangler d1 migrations apply DB --local",
     "d1:remote": "wrangler d1 migrations apply DB --remote"
@@ -16,6 +17,7 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250224.0",
+    "esbuild": "^0.17.19",
     "typescript": "^5.7.3",
     "wrangler": "^3.111.0"
   }

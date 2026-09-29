@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env, User } from './types';
+import { Env, User, getEffectivePlanTier } from './types';
 import { createUserSession } from './auth';
 
 export const licenseApiRouter = new Hono<{ Bindings: Env }>();
@@ -85,9 +85,7 @@ licenseApiRouter.get('/me', async (c) => {
   `).bind(user.id).all<{ plan_tier: string; status: string; current_period_end: number }>();
 
   const licenses = (subscriptions.results || []).map((subscription) => {
-    const paid = subscription.plan_tier === 'pro' || subscription.plan_tier === 'enterprise';
-    const active = paid && (subscription.status === 'active' || subscription.status === 'trialing') &&
-      subscription.current_period_end > now;
+    const active = getEffectivePlanTier(subscription.plan_tier, subscription.status, subscription.current_period_end, now) !== 'free';
     return {
       edition: subscription.plan_tier,
       status: active ? 'active' : 'expired',

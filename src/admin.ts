@@ -30,6 +30,7 @@ adminRouter.get('/users', async (c) => {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
+  const now = Math.floor(Date.now() / 1000);
   const query = `
     SELECT
       u.id as user_id,
@@ -39,12 +40,14 @@ adminRouter.get('/users', async (c) => {
       o.id as org_id,
       o.name as org_name,
       s.id as subscription_id,
-      COALESCE(s.plan_tier, 'free') as plan_tier,
+      CASE WHEN s.plan_tier IN ('pro', 'enterprise')
+             AND s.status IN ('active', 'trialing') AND s.current_period_end > ?
+           THEN s.plan_tier ELSE 'free' END as plan_tier,
       COALESCE(s.status, 'active') as status,
       COALESCE(s.current_period_end, 0) as current_period_end,
       CASE
-        WHEN s.plan_tier = 'pro' THEN 3
-        WHEN s.plan_tier = 'enterprise' THEN COALESCE(s.max_devices, 50)
+        WHEN s.plan_tier = 'pro' AND s.status IN ('active', 'trialing') AND s.current_period_end > ? THEN 3
+        WHEN s.plan_tier = 'enterprise' AND s.status IN ('active', 'trialing') AND s.current_period_end > ? THEN COALESCE(s.max_devices, 50)
         ELSE 1
       END as max_devices
     FROM users u
@@ -53,7 +56,7 @@ adminRouter.get('/users', async (c) => {
     ORDER BY u.created_at DESC
   `;
 
-  const { results } = await c.env.DB.prepare(query).all();
+  const { results } = await c.env.DB.prepare(query).bind(now, now, now).all();
   return c.json({ status: 'ok', users: results || [] });
 });
 

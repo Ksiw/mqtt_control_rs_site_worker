@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env, getTierDeviceLimit } from './types';
+import { Env, getTierDeviceLimit, getEffectivePlanTier } from './types';
 import { getCurrentUser, generateDeviceKey, sha256Hex } from './cabinet';
 
 export const pairRouter = new Hono<{ Bindings: Env }>();
@@ -151,16 +151,17 @@ pairRouter.get('/info', async (c) => {
 
   if (user) {
     const orgMember = await c.env.DB.prepare(`
-      SELECT o.id as org_id, s.plan_tier, s.max_devices, s.trial_used
+      SELECT o.id as org_id, s.plan_tier, s.status, s.current_period_end, s.max_devices, s.trial_used
       FROM organization_members m
       JOIN organizations o ON m.org_id = o.id
       LEFT JOIN subscriptions s ON s.org_id = o.id
       WHERE m.user_id = ?
       LIMIT 1
-    `).bind(user.id).first<{ org_id: string; plan_tier: string; max_devices: number; trial_used: number }>();
+    `).bind(user.id).first<{ org_id: string; plan_tier: string; status: string; current_period_end: number; max_devices: number; trial_used: number }>();
 
     if (orgMember) {
-      const maxDevs = getTierDeviceLimit(orgMember.plan_tier, orgMember.max_devices);
+      const effectiveTier = getEffectivePlanTier(orgMember.plan_tier, orgMember.status, orgMember.current_period_end, now);
+      const maxDevs = getTierDeviceLimit(effectiveTier, orgMember.max_devices);
       const devices = await c.env.DB.prepare(`
         SELECT d.id, d.name, d.is_online, d.last_heartbeat_at
         FROM devices d
@@ -190,7 +191,7 @@ pairRouter.get('/info', async (c) => {
 
         transfersUsed = trRow?.count ?? 0;
         canTransfer = transfersUsed < 4;
-        canTrial = (orgMember.plan_tier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0));
+        canTrial = (effectiveTier === 'free' && (!orgMember.trial_used || orgMember.trial_used === 0));
       }
     }
   }
@@ -251,13 +252,13 @@ pairRouter.post('/approve', async (c) => {
 
   // Находим организацию и подписку пользователя
   const orgMember = await c.env.DB.prepare(`
-    SELECT o.id as org_id, m.role, s.plan_tier, s.max_devices, s.trial_used
+    SELECT o.id as org_id, m.role, s.plan_tier, s.status, s.current_period_end, s.max_devices, s.trial_used
     FROM organization_members m
     JOIN organizations o ON m.org_id = o.id
     LEFT JOIN subscriptions s ON s.org_id = o.id
     WHERE m.user_id = ?
     LIMIT 1
-  `).bind(user.id).first<{ org_id: string; role: string; plan_tier: string; max_devices: number; trial_used: number }>();
+  `).bind(user.id).first<{ org_id: string; role: string; plan_tier: string; status: string; current_period_end: number; max_devices: number; trial_used: number }>();
 
   if (!orgMember || orgMember.role !== 'owner') {
     return c.json({ status: 'error', message: 'Только владелец аккаунта может подтверждать привязку хоста' }, 403);
@@ -295,7 +296,8 @@ pairRouter.post('/approve', async (c) => {
   `).bind(orgMember.org_id).first<{ count: number }>();
 
   let count = currentDevCount?.count ?? 0;
-  const maxDevs = getTierDeviceLimit(orgMember.plan_tier, orgMember.max_devices);
+  const effectiveTier = getEffectivePlanTier(orgMember.plan_tier, orgMember.status, orgMember.current_period_end, now);
+  const maxDevs = getTierDeviceLimit(effectiveTier, orgMember.max_devices);
 
   let successMsg = `Хост «${pairing.device_name}» успешно привязан к аккаунту!`;
   let oldDeviceIdToRecord: string | null = null;
@@ -333,7 +335,7 @@ pairRouter.post('/approve', async (c) => {
 
       successMsg = `Привязка успешно перенесена на «${pairing.device_name}». Прежний компьютер отключен (использовано переносов: ${used + 1} из 4 за 30 дн.).`;
     } else if (action === 'trial') {
-      if (orgMember.plan_tier !== 'free' || (orgMember.trial_used && orgMember.trial_used > 0)) {
+      if (effectiveTier !== 'free' || (orgMember.trial_used && orgMember.trial_used > 0)) {
         return c.json({ status: 'error', message: 'Пробный период Pro уже был использован ранее.' }, 400);
       }
 

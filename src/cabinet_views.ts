@@ -2,6 +2,7 @@ import { Device, Organization, User, Workspace } from './types';
 import { renderCabinetScripts } from './cabinet_scripts';
 import { renderCabinetModals } from './cabinet_modals';
 import { renderAdminSection, renderAdminScripts } from './admin_view';
+import { escapeHtml, htmlJsArg } from './html';
 export { renderLoginHtml } from './login_view';
 
 function renderDashCard(d: any): string {
@@ -14,14 +15,14 @@ function renderDashCard(d: any): string {
           ${isOnline 
             ? '<span class="badge badge-online"><span class="dot"></span> Доступен</span>' 
             : '<span class="badge badge-offline"><span class="dot"></span> Хост не в сети</span>'}
-          <span class="dash-meta">${d.ws_slug}</span>
+          <span class="dash-meta">${escapeHtml(d.ws_slug)}</span>
         </div>
-        <div class="dash-name">${d.name}</div>
+        <div class="dash-name">${escapeHtml(d.name)}</div>
       </div>
       <div style="display:flex; gap:8px;">
         ${isOnline ? `
-          <a href="${dashUrl}" target="_blank" class="btn-open" style="flex:1;">Открыть дашборд ↗</a>
-          <button onclick="showQr('${dashUrl}', '${d.name.replace(/'/g, "\\'")}')" class="btn-secondary" title="QR-код для смартфона">📱 QR</button>
+          <a href="${escapeHtml(dashUrl)}" target="_blank" class="btn-open" style="flex:1;">Открыть дашборд ↗</a>
+          <button onclick="showQr(${htmlJsArg(dashUrl)}, ${htmlJsArg(d.name)})" class="btn-secondary" title="QR-код для смартфона">📱 QR</button>
         ` : `
           <span class="btn-secondary" style="opacity:0.6; cursor:not-allowed; flex:1; text-align:center; padding:8px 0;">Хост не в сети</span>
         `}
@@ -40,8 +41,8 @@ function renderHostSection(dev: Device, devDashboards: any[]): string {
       <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; padding-bottom:12px; border-bottom:1px solid #1e2430; flex-wrap:wrap; gap:8px;">
         <div style="display:flex; align-items:center; gap:10px;">
           <span style="font-size:18px;">🖥️</span>
-          <span style="font-size:16px; font-weight:600; color:#f8fafc;">${dev.name}</span>
-          ${dev.app_version ? `<span style="font-size:12px; color:#64748b;">v${dev.app_version}</span>` : ''}
+          <span style="font-size:16px; font-weight:600; color:#f8fafc;">${escapeHtml(dev.name)}</span>
+          ${dev.app_version ? `<span style="font-size:12px; color:#64748b;">v${escapeHtml(dev.app_version)}</span>` : ''}
         </div>
         <div>${onlineBadge}</div>
       </div>
@@ -118,7 +119,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
     <head>
       <meta charset="utf-8">
       <meta name="viewport" content="width=device-width, initial-scale=1">
-      <title>Управление | ${user.name || user.email}</title>
+      <title>Управление | ${escapeHtml(user.name || user.email)}</title>
       <style>
         * { box-sizing: border-box; margin: 0; padding: 0; font-family: system-ui, -apple-system, sans-serif; }
         body { background: #0b0e14; color: #e2e8f0; min-height: 100vh; display: flex; flex-direction: column; }
@@ -184,7 +185,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           ${tierBadge}
           ${canTrial ? `<button type="button" onclick="activateTrial()" style="background:linear-gradient(135deg, #7c3aed, #4f46e5); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">✨ 60 дней Pro бесплатно</button>` : ''}
           ${isOwner && planTier !== 'enterprise' ? `<button type="button" onclick="openProModal()" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">${planTier === 'pro' && !isTrial ? '★ Продлить Pro' : '🔥 Оформить Pro'}</button>` : ''}
-          <span class="user-email">${user.name || user.email}</span>
+          <span class="user-email">${escapeHtml(user.name || user.email)}</span>
           <a href="/auth/logout" class="btn-logout">Выйти</a>
         </div>
       </div>
@@ -236,7 +237,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           <div class="section-title">
             <span>Хост-программы (серверы автоматики: ${devices.length} из ${maxDevices})</span>
             ${canAddDevice ? `
-              <button class="btn-secondary" onclick="openAddDeviceModal('${currentWsId}')">+ Добавить хост</button>
+              <button class="btn-secondary" onclick="openAddDeviceModal(${htmlJsArg(currentWsId)})">+ Добавить хост</button>
             ` : `
               <span style="font-size:12px; color:#94a3b8;">Лимит слотов (${maxDevices}) заполнен</span>
             `}
@@ -260,16 +261,16 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
                 <tbody>
                   ${devices.map(dev => `
                     <tr>
-                      <td style="font-weight:500;">${dev.name}</td>
+                      <td style="font-weight:500;">${escapeHtml(dev.name)}</td>
                       <td>
                         ${dev.is_online === 1 
                           ? '<span class="badge badge-online"><span class="dot"></span> Онлайн</span>' 
                           : '<span class="badge badge-offline"><span class="dot"></span> Оффлайн</span>'}
                       </td>
-                      <td style="color:#64748b;">${dev.app_version || '—'}</td>
+                      <td style="color:#64748b;">${escapeHtml(dev.app_version || '—')}</td>
                       ${isOwner ? `
                         <td style="text-align:right;">
-                          <button onclick="removeDevice('${dev.id}', '${dev.name.replace(/'/g, "\\'")}')" class="btn-danger-sm">Удалить</button>
+                          <button onclick="removeDevice(${htmlJsArg(dev.id)}, ${htmlJsArg(dev.name)})" class="btn-danger-sm">Удалить</button>
                         </td>
                       ` : ''}
                     </tr>
@@ -304,25 +305,25 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
               ${members.map(m => `
                 <tr>
                   <td style="font-weight:500;">
-                    ${m.email}
+                    ${escapeHtml(m.email)}
                   </td>
                   <td><span style="font-size:12px; color:#94a3b8;">${m.is_owner ? 'Администратор' : 'Пользователь'}</span></td>
                   <td><span class="badge badge-online"><span class="dot"></span> Подключён</span></td>
                   ${isOwner ? `
                     <td style="text-align:right;">
-                      ${!m.is_owner ? `<button onclick="removeMember('${m.id}')" class="btn-danger-sm">Отозвать</button>` : '—'}
+                      ${!m.is_owner ? `<button onclick="removeMember(${htmlJsArg(m.id)})" class="btn-danger-sm">Отозвать</button>` : '—'}
                     </td>
                   ` : ''}
                 </tr>
               `).join('')}
               ${pendingInvites.map(inv => `
                 <tr style="opacity: 0.75;">
-                  <td>${inv.email}</td>
+                  <td>${escapeHtml(inv.email)}</td>
                   <td><span style="font-size:12px; color:#94a3b8;">Пользователь</span></td>
                   <td><span class="badge badge-offline"><span class="dot"></span> Ожидает входа через Google</span></td>
                   ${isOwner ? `
                     <td style="text-align:right;">
-                      <button onclick="removeInvite('${inv.email}')" class="btn-danger-sm">Отменить</button>
+                      <button onclick="removeInvite(${htmlJsArg(inv.email)})" class="btn-danger-sm">Отменить</button>
                     </td>
                   ` : ''}
                 </tr>
