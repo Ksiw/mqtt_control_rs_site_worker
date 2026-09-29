@@ -54,7 +54,7 @@ familyRouter.post('/invite', async (c) => {
   if (total >= maxAccounts) {
     return c.json({
       status: 'error',
-      message: `Достигнут лимит бесплатной версии (${maxAccounts} аккаунтов). Чтобы добавить больше людей, необходим тариф Pro.`
+      message: `Достигнут лимит тарифа «Домашний (бесплатный)» (${maxAccounts} аккаунтов). Чтобы добавить больше людей, необходим тариф Pro.`
     }, 403);
   }
 

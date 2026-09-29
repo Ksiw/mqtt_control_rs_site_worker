@@ -38,13 +38,24 @@ export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: 
     </div>
 
     <div class="card" style="margin-bottom: 24px;">
-      <div style="font-size: 14px; font-weight: 600; color: #f8fafc; margin-bottom: 12px;">Быстрая выдача Pro-лицензии</div>
+      <div style="font-size: 14px; font-weight: 600; color: #f8fafc; margin-bottom: 12px;">Выдача или продление лицензии</div>
       <form id="grantLicenseForm" onsubmit="submitAdminGrant(event)" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end;">
-        <div style="flex:1; min-width:240px;">
+        <div style="flex:1; min-width:220px;">
           <label class="form-label" for="grantEmail">Email пользователя</label>
           <input id="grantEmail" class="form-input" type="email" placeholder="user@gmail.com" required autocomplete="off" />
         </div>
         <div style="width:160px;">
+          <label class="form-label" for="grantTier">Тариф</label>
+          <select id="grantTier" class="form-select" onchange="toggleGrantDevices()">
+            <option value="pro">Pro (3 хоста)</option>
+            <option value="enterprise">Enterprise</option>
+          </select>
+        </div>
+        <div id="grantDevicesGroup" style="width:130px; display:none;">
+          <label class="form-label" for="grantDevicesInput">Лимит хостов</label>
+          <input id="grantDevicesInput" class="form-input" type="number" min="1" max="9999" placeholder="Кол-во" />
+        </div>
+        <div style="width:150px;">
           <label class="form-label" for="grantDuration">Срок</label>
           <select id="grantDuration" class="form-select">
             <option value="month">+1 месяц</option>
@@ -54,7 +65,7 @@ export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: 
         </div>
         <div>
           <button id="grantSubmitBtn" type="submit" class="btn-primary" style="background:#d97706; padding:10px 18px;">
-            ✓ Выдать Pro
+            ✓ Выдать лицензию
           </button>
         </div>
       </form>
@@ -87,6 +98,38 @@ export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: 
         </table>
       </div>
     </div>
+
+    <!-- Модальное окно оформления Enterprise для пользователя -->
+    <div id="adminEnterpriseModal" class="modal-overlay">
+      <div class="modal-box" style="max-width: 440px;">
+        <div class="modal-title" style="display:flex; align-items:center; justify-content:space-between;">
+          <span style="color:#d8b4fe;">🏢 Назначение Enterprise</span>
+          <button onclick="closeEnterpriseModal()" style="background:none; border:none; color:#64748b; font-size:18px; cursor:pointer;">✕</button>
+        </div>
+        <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">
+          Пользователь: <strong id="entModalEmail" style="color:#f8fafc;"></strong>
+        </p>
+        <form onsubmit="submitEnterpriseModal(event)">
+          <div class="form-group">
+            <label class="form-label" for="entModalDevices">Количество хост-программ (серверов компании)</label>
+            <input id="entModalDevices" class="form-input" type="number" min="1" max="9999" placeholder="Например: 10, 25 или 100" required autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label class="form-label" for="entModalDuration">Срок действия контракта</label>
+            <select id="entModalDuration" class="form-select">
+              <option value="year">+1 год</option>
+              <option value="month">+1 месяц</option>
+              <option value="lifetime">Бессрочно (50 лет)</option>
+            </select>
+          </div>
+          <div id="entModalError" style="color:#f87171; font-size:13px; margin-bottom:12px; display:none;"></div>
+          <div class="modal-actions" style="justify-content:space-between;">
+            <button type="button" onclick="closeEnterpriseModal()" class="btn-secondary">Отмена</button>
+            <button id="entModalSubmitBtn" type="submit" class="btn-primary" style="background:#9333ea;">✓ Назначить Enterprise</button>
+          </div>
+        </form>
+      </div>
+    </div>
   `;
 }
 
@@ -109,12 +152,17 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
         }
         tbody.innerHTML = users.map(u => {
           const isPro = u.plan_tier === 'pro';
-          const endDate = u.current_period_end > 0 
-            ? new Date(u.current_period_end * 1000).toLocaleDateString('ru-RU')
-            : '—';
-          const badge = isPro 
-            ? '<span class="badge" style="background:#1e3a5f; color:#38bdf8; border:1px solid #0284c7;">PRO</span>'
-            : '<span class="badge badge-offline">FREE</span>';
+          const isEnterprise = u.plan_tier === 'enterprise';
+          const isPaid = isPro || isEnterprise;
+          const endDate = (u.plan_tier === 'free' || !u.current_period_end || u.current_period_end <= 0)
+            ? 'Бессрочно'
+            : new Date(u.current_period_end * 1000).toLocaleDateString('ru-RU');
+          let badge = '<span class="badge badge-offline">Домашний (бесплатный)</span>';
+          if (isEnterprise) {
+            badge = '<span class="badge" style="background:#3b1e54; color:#d8b4fe; border:1px solid #9333ea;">ENTERPRISE</span>';
+          } else if (isPro) {
+            badge = '<span class="badge" style="background:#1e3a5f; color:#38bdf8; border:1px solid #0284c7;">PRO</span>';
+          }
           return \`
             <tr>
               <td>
@@ -124,11 +172,17 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
               <td>\${badge}</td>
               <td style="color:#94a3b8; font-size:13px;">до \${u.max_devices} хостов</td>
               <td style="color:#cbd5e1; font-size:13px;">\${endDate}</td>
-              <td style="text-align:right;">
-                \${isPro ? \`
-                  <button onclick="revokeAdminLicense('\${u.email}')" class="btn-danger-sm" title="Сбросить на Free">Отозвать</button>
+              <td style="text-align:right; white-space:nowrap;">
+                \${isEnterprise ? \`
+                  <button onclick="openEnterpriseModal('\${u.email}', \${u.max_devices})" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Изменить лимит хостов или срок">Изменить Enterprise</button>
+                  <button onclick="revokeAdminLicense('\${u.email}')" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
+                \` : isPro ? \`
+                  <button onclick="quickGrant('\${u.email}', 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;" title="Продлить Pro на 1 месяц">+1 мес Pro</button>
+                  <button onclick="openEnterpriseModal('\${u.email}')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe; margin-right:4px;" title="Перевести на Enterprise">Enterprise</button>
+                  <button onclick="revokeAdminLicense('\${u.email}')" class="btn-danger-sm" title="Сбросить на Домашний (бесплатный)">Отозвать</button>
                 \` : \`
-                  <button onclick="quickGrant('\${u.email}', 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8;">+1 мес Pro</button>
+                  <button onclick="quickGrant('\${u.email}', 'month')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#0284c7; color:#38bdf8; margin-right:4px;">+1 мес Pro</button>
+                  <button onclick="openEnterpriseModal('\${u.email}')" class="btn-secondary" style="padding:3px 8px; font-size:12px; border-color:#9333ea; color:#d8b4fe;">Enterprise</button>
                 \`}
               </td>
             </tr>
@@ -165,10 +219,22 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
         }
       }
 
+      function toggleGrantDevices() {
+        const tier = document.getElementById('grantTier') ? document.getElementById('grantTier').value : 'pro';
+        const group = document.getElementById('grantDevicesGroup');
+        if (group) {
+          group.style.display = tier === 'enterprise' ? 'block' : 'none';
+        }
+      }
+
       async function submitAdminGrant(e) {
         e.preventDefault();
         const email = document.getElementById('grantEmail').value.trim();
+        const tier = document.getElementById('grantTier') ? document.getElementById('grantTier').value : 'pro';
         const duration = document.getElementById('grantDuration').value;
+        const devInput = document.getElementById('grantDevicesInput');
+        const max_devices = (tier === 'enterprise' && devInput) ? parseInt(devInput.value, 10) : undefined;
+
         const msgDiv = document.getElementById('grantMsg');
         const btn = document.getElementById('grantSubmitBtn');
         btn.disabled = true;
@@ -177,7 +243,7 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
           const res = await fetch('/api/v1/admin/license/grant', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, duration })
+            body: JSON.stringify({ email, tier, duration, max_devices })
           });
           const data = await res.json();
           msgDiv.style.display = 'block';
@@ -219,7 +285,7 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
       }
 
       async function revokeAdminLicense(email) {
-        if (!confirm('Отозвать лицензию Pro у ' + email + ' и сбросить на Free?')) return;
+        if (!confirm('Отозвать лицензию Pro у ' + email + ' и сбросить на Домашний (бесплатный)?')) return;
         try {
           const res = await fetch('/api/v1/admin/license/revoke', {
             method: 'POST',
@@ -234,6 +300,76 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
           }
         } catch (err) {
           alert('Ошибка сети');
+        }
+      }
+
+      let currentEnterpriseEmail = '';
+
+      function openEnterpriseModal(email, currentDevices) {
+        currentEnterpriseEmail = email;
+        const emailEl = document.getElementById('entModalEmail');
+        if (emailEl) emailEl.textContent = email;
+        const devInput = document.getElementById('entModalDevices');
+        if (devInput) devInput.value = currentDevices ? currentDevices : '';
+        const errDiv = document.getElementById('entModalError');
+        if (errDiv) errDiv.style.display = 'none';
+        const modal = document.getElementById('adminEnterpriseModal');
+        if (modal) modal.style.display = 'flex';
+        if (devInput) devInput.focus();
+      }
+
+      function closeEnterpriseModal() {
+        const modal = document.getElementById('adminEnterpriseModal');
+        if (modal) modal.style.display = 'none';
+      }
+
+      async function submitEnterpriseModal(e) {
+        e.preventDefault();
+        const devices = parseInt(document.getElementById('entModalDevices').value, 10);
+        const duration = document.getElementById('entModalDuration').value;
+        const errDiv = document.getElementById('entModalError');
+        const btn = document.getElementById('entModalSubmitBtn');
+
+        if (!devices || devices < 1) {
+          if (errDiv) {
+            errDiv.textContent = 'Укажите количество хостов больше 0';
+            errDiv.style.display = 'block';
+          }
+          return;
+        }
+
+        btn.disabled = true;
+        btn.textContent = 'Сохранение...';
+
+        try {
+          const res = await fetch('/api/v1/admin/license/grant', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              email: currentEnterpriseEmail,
+              tier: 'enterprise',
+              max_devices: devices,
+              duration: duration
+            })
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            closeEnterpriseModal();
+            loadAdminUsers();
+          } else {
+            if (errDiv) {
+              errDiv.textContent = data.message || 'Ошибка';
+              errDiv.style.display = 'block';
+            }
+          }
+        } catch (err) {
+          if (errDiv) {
+            errDiv.textContent = 'Ошибка сети';
+            errDiv.style.display = 'block';
+          }
+        } finally {
+          btn.disabled = false;
+          btn.textContent = '✓ Назначить Enterprise';
         }
       }
 

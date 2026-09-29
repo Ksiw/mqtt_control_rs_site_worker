@@ -1,5 +1,5 @@
 import { Hono } from 'hono';
-import { Env } from './types';
+import { Env, getTierDeviceLimit } from './types';
 import { getCurrentUser, generateDeviceKey, sha256Hex } from './cabinet';
 
 export const pairRouter = new Hono<{ Bindings: Env }>();
@@ -160,7 +160,7 @@ pairRouter.get('/info', async (c) => {
     `).bind(user.id).first<{ org_id: string; plan_tier: string; max_devices: number; trial_used: number }>();
 
     if (orgMember) {
-      const maxDevs = orgMember.max_devices ?? 1;
+      const maxDevs = getTierDeviceLimit(orgMember.plan_tier, orgMember.max_devices);
       const devices = await c.env.DB.prepare(`
         SELECT d.id, d.name, d.is_online, d.last_heartbeat_at
         FROM devices d
@@ -295,7 +295,7 @@ pairRouter.post('/approve', async (c) => {
   `).bind(orgMember.org_id).first<{ count: number }>();
 
   let count = currentDevCount?.count ?? 0;
-  const maxDevs = orgMember.max_devices ?? 1;
+  const maxDevs = getTierDeviceLimit(orgMember.plan_tier, orgMember.max_devices);
 
   let successMsg = `Хост «${pairing.device_name}» успешно привязан к аккаунту!`;
   let oldDeviceIdToRecord: string | null = null;
@@ -340,15 +340,15 @@ pairRouter.post('/approve', async (c) => {
       const trialEnd = now + (60 * 86400);
       await c.env.DB.prepare(`
         UPDATE subscriptions
-        SET plan_tier = 'pro', status = 'trialing', max_devices = 5, trial_used = 1, current_period_end = ?
+        SET plan_tier = 'pro', status = 'trialing', max_devices = 3, trial_used = 1, current_period_end = ?
         WHERE org_id = ?
       `).bind(trialEnd, orgMember.org_id).run();
 
-      successMsg = `Вам активирован ознакомительный период Pro на 60 дней (до 5 хостов)! Хост «${pairing.device_name}» успешно подключен.`;
+      successMsg = `Вам активирован ознакомительный период Pro на 60 дней (до 3 хостов)! Хост «${pairing.device_name}» успешно подключен.`;
     } else {
       return c.json({
         status: 'error',
-        message: 'Достигнут лимит хостов на бесплатном тарифе. Выберите перенос привязки на этот компьютер или включите пробный период Pro.'
+        message: 'Достигнут лимит хостов на тарифе «Домашний (бесплатный)». Выберите перенос привязки на этот компьютер или включите пробный период Pro.'
       }, 400);
     }
   }

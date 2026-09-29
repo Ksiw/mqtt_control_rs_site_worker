@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { Env, User } from './types';
 import { getCurrentUser } from './cabinet';
+import { addCalendarMonths, addCalendarYears } from './calendar';
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
 
@@ -30,7 +31,7 @@ adminRouter.get('/users', async (c) => {
   }
 
   const query = `
-    SELECT 
+    SELECT
       u.id as user_id,
       u.email,
       u.name,
@@ -41,7 +42,11 @@ adminRouter.get('/users', async (c) => {
       COALESCE(s.plan_tier, 'free') as plan_tier,
       COALESCE(s.status, 'active') as status,
       COALESCE(s.current_period_end, 0) as current_period_end,
-      COALESCE(s.max_devices, 1) as max_devices
+      CASE
+        WHEN s.plan_tier = 'pro' THEN 3
+        WHEN s.plan_tier = 'enterprise' THEN COALESCE(s.max_devices, 50)
+        ELSE 1
+      END as max_devices
     FROM users u
     LEFT JOIN organizations o ON o.owner_user_id = u.id
     LEFT JOIN subscriptions s ON s.org_id = o.id
@@ -53,9 +58,9 @@ adminRouter.get('/users', async (c) => {
 });
 
 /**
- * Выдать или продлить Pro лицензию
+ * Выдать или продлить Pro / Enterprise лицензию
  * POST /api/v1/admin/license/grant
- * Body: { email: string, duration: 'month' | 'year' | 'lifetime' }
+ * Body: { email: string, tier?: 'pro' | 'enterprise', duration: 'month' | 'year' | 'lifetime', max_devices?: number }
  */
 adminRouter.post('/license/grant', async (c) => {
   const user = await getCurrentUser(c);
@@ -63,9 +68,11 @@ adminRouter.post('/license/grant', async (c) => {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
-  const { email, duration } = (await c.req.json().catch(() => ({}))) as {
+  const { email, tier, duration, max_devices } = (await c.req.json().catch(() => ({}))) as {
     email?: string;
+    tier?: 'pro' | 'enterprise';
     duration?: 'month' | 'year' | 'lifetime';
+    max_devices?: number;
   };
 
   if (!email) {
@@ -73,6 +80,14 @@ adminRouter.post('/license/grant', async (c) => {
   }
 
   const targetEmail = email.toLowerCase().trim();
+  const planTier = tier === 'enterprise' ? 'enterprise' : 'pro';
+
+  // Для Enterprise лимит хостов задается администратором вручную, для Pro — строго 3
+  const limitDevices = planTier === 'enterprise'
+    ? (max_devices && max_devices > 0 ? Math.min(Math.max(1, Math.floor(max_devices)), 9999) : 50)
+    : 3;
+  const limitDashboards = planTier === 'enterprise' ? 500 : 50;
+  const limitWorkspaces = planTier === 'enterprise' ? 100 : 5;
 
   // Ищем пользователя
   const targetUser = await c.env.DB.prepare(
@@ -104,37 +119,38 @@ adminRouter.post('/license/grant', async (c) => {
   ).bind(org.id).first<{ id: string; current_period_end: number; plan_tier: string }>();
 
   let periodEnd = now;
-  if (existingSub && existingSub.current_period_end > now && existingSub.plan_tier === 'pro') {
+  if (existingSub && existingSub.current_period_end > now && existingSub.plan_tier === planTier) {
     periodEnd = existingSub.current_period_end;
   }
 
   if (duration === 'month') {
-    periodEnd += 30 * 86400;
+    periodEnd = addCalendarMonths(periodEnd, 1);
   } else if (duration === 'year') {
-    periodEnd += 365 * 86400;
+    periodEnd = addCalendarYears(periodEnd, 1);
   } else if (duration === 'lifetime') {
-    periodEnd = now + 50 * 365 * 86400; // 50 лет
+    periodEnd = addCalendarYears(now, 50); // 50 лет
   } else {
-    periodEnd += 30 * 86400; // по умолчанию месяц
+    periodEnd = addCalendarMonths(periodEnd, 1); // по умолчанию календарный месяц
   }
 
   if (existingSub) {
     await c.env.DB.prepare(`
       UPDATE subscriptions
-      SET plan_tier = 'pro', status = 'active', max_devices = 10, max_dashboards = 50, current_period_end = ?
+      SET plan_tier = ?, status = 'active', max_devices = ?, max_dashboards = ?, max_workspaces = ?, current_period_end = ?
       WHERE org_id = ?
-    `).bind(periodEnd, org.id).run();
+    `).bind(planTier, limitDevices, limitDashboards, limitWorkspaces, periodEnd, org.id).run();
   } else {
     const subId = `sub_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
     await c.env.DB.prepare(`
       INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices, max_dashboards, current_period_end, created_at)
-      VALUES (?, ?, 'pro', 'active', 5, 10, 50, ?, ?)
-    `).bind(subId, org.id, periodEnd, now).run();
+      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)
+    `).bind(subId, org.id, planTier, limitWorkspaces, limitDevices, limitDashboards, periodEnd, now).run();
   }
 
+  const tierLabel = planTier === 'enterprise' ? 'Enterprise' : 'Pro';
   return c.json({
     status: 'ok',
-    message: `Лицензия Pro успешно активирована для ${targetEmail}`,
+    message: `Лицензия ${tierLabel} (до ${limitDevices} хостов) успешно активирована для ${targetEmail}`,
     current_period_end: periodEnd
   });
 });
@@ -179,7 +195,7 @@ adminRouter.post('/license/revoke', async (c) => {
 
   return c.json({
     status: 'ok',
-    message: `Лицензия Pro отозвана для ${targetEmail}. Тариф сброшен на Free.`
+    message: `Лицензия Pro отозвана для ${targetEmail}. Тариф сброшен на Домашний (бесплатный).`
   });
 });
 

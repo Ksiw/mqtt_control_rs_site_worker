@@ -89,24 +89,27 @@ interface CabinetViewProps {
   isSuperAdmin?: boolean;
   isTrial?: boolean;
   daysLeft?: number;
+  canTrial?: boolean;
   paymentNotification?: string;
   planPrices?: { month: number; year: number };
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
-  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isSuperAdmin, isTrial, daysLeft, paymentNotification, planPrices } = props;
+  const { user, currentOrg, workspaces, devices, dashboards, members, pendingInvites, planTier, maxDevices, maxMembers, isOwner, isSuperAdmin, isTrial, daysLeft, canTrial, paymentNotification, planPrices } = props;
   const currentWsId = workspaces[0]?.id || '';
   const totalAccounts = members.length + pendingInvites.length;
   const canAddDevice = devices.length < maxDevices && isOwner;
   const canInvite = totalAccounts < maxMembers && isOwner;
 
-  let tierBadge = `<span class="tier-badge">Тариф: Семья (бесплатный) · 1 хост · до 5 аккаунтов</span>`;
+  let tierBadge = `<span class="tier-badge">Тариф: Домашний (бесплатный) · 1 хост · до 5 аккаунтов</span>`;
   if (!isOwner) {
     tierBadge = `<span class="tier-badge">Пользователь</span>`;
+  } else if (planTier === 'enterprise') {
+    tierBadge = `<span class="tier-badge" style="background:#2e1065; border-color:#9333ea; color:#d8b4fe;">🏢 Тариф Enterprise · до ${maxDevices} хостов</span>`;
   } else if (isTrial) {
-    tierBadge = `<span class="tier-badge" style="background:#2d1b06; border-color:#d97706; color:#fbbf24;">🔥 Тариф Pro (Пробный период: осталось ${daysLeft ?? 60} дн.) · до 5 хостов</span>`;
+    tierBadge = `<span class="tier-badge" style="background:#2d1b06; border-color:#d97706; color:#fbbf24;">🔥 Тариф Pro (Пробный период: осталось ${daysLeft ?? 60} дн.) · до 3 хостов</span>`;
   } else if (planTier === 'pro') {
-    tierBadge = `<span class="tier-badge" style="background:#1e3a5f; border-color:#0284c7; color:#38bdf8;">★ Тариф Pro (активен) · до 10 хостов</span>`;
+    tierBadge = `<span class="tier-badge" style="background:#1e3a5f; border-color:#0284c7; color:#38bdf8;">★ Тариф Pro (активен${daysLeft && daysLeft > 0 ? `: осталось ${daysLeft} дн.` : ''}) · до 3 хостов</span>`;
   }
 
   return `
@@ -179,7 +182,8 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
         <div class="header-user">
           ${tierBadge}
-          ${isOwner ? `<button type="button" onclick="openProModal()" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">${planTier === 'pro' && !isTrial ? '★ Продлить Pro' : '🔥 Оформить Pro'}</button>` : ''}
+          ${canTrial ? `<button type="button" onclick="activateTrial()" style="background:linear-gradient(135deg, #7c3aed, #4f46e5); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">✨ 60 дней Pro бесплатно</button>` : ''}
+          ${isOwner && planTier !== 'enterprise' ? `<button type="button" onclick="openProModal()" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">${planTier === 'pro' && !isTrial ? '★ Продлить Pro' : '🔥 Оформить Pro'}</button>` : ''}
           <span class="user-email">${user.name || user.email}</span>
           <a href="/auth/logout" class="btn-logout">Выйти</a>
         </div>
@@ -190,6 +194,18 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           <div style="background:#064e3b; border:1px solid #059669; color:#34d399; padding:14px 20px; border-radius:8px; margin-bottom:24px; font-size:14px; display:flex; align-items:center; justify-content:space-between;">
             <span>${paymentNotification}</span>
             <button onclick="this.parentElement.style.display='none'" style="background:none; border:none; color:#34d399; font-size:16px; cursor:pointer;">✕</button>
+          </div>
+        ` : ''}
+
+        ${canTrial ? `
+          <div style="background:linear-gradient(90deg, #1e1b4b 0%, #172554 100%); border:1px solid #6366f1; border-radius:10px; padding:16px 20px; margin-bottom:24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px;">
+            <div>
+              <div style="font-weight:600; color:#e0e7ff; font-size:15px; margin-bottom:4px;">🎁 Доступен ознакомительный период Pro на 60 дней</div>
+              <div style="color:#94a3b8; font-size:13px;">Подключите до 3 хост-программ, создавайте до 50 дашбордов и добавьте до 15 пользователей без привязки карты.</div>
+            </div>
+            <button type="button" id="activateTrialBtn" onclick="activateTrial()" class="btn-primary" style="background:#6366f1; white-space:nowrap; padding:9px 18px; font-weight:600;">
+              ✨ Активировать бесплатно
+            </button>
           </div>
         ` : ''}
 
@@ -264,13 +280,13 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           </div>
         ` : ''}
 
-        <!-- Блок Семейный доступ -->
+        <!-- Блок Пользователи и доступ -->
         <div class="section-title">
-          <span>Семейный доступ (${totalAccounts} из ${maxMembers})</span>
+          <span>Пользователи и доступ (${totalAccounts} из ${maxMembers})</span>
           ${canInvite ? `
-            <button class="btn-secondary" onclick="openInviteModal()">+ Пригласить члена семьи</button>
+            <button class="btn-secondary" onclick="openInviteModal()">+ Пригласить пользователя</button>
           ` : `
-            <span style="font-size:12px; color:#94a3b8;">${totalAccounts >= maxMembers ? 'Лимит 5 аккаунтов заполнен' : ''}</span>
+            <span style="font-size:12px; color:#94a3b8;">${totalAccounts >= maxMembers ? `Лимит аккаунтов (${maxMembers}) заполнен` : ''}</span>
           `}
         </div>
 
@@ -323,7 +339,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         </div>
       </div>
 
-      ${renderCabinetModals(planPrices)}
+      ${renderCabinetModals(planPrices, canTrial)}
 
       ${renderCabinetScripts(currentWsId)}
       ${renderAdminScripts(Boolean(isSuperAdmin))}

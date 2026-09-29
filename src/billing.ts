@@ -2,6 +2,7 @@ import { Hono } from 'hono';
 import { Env } from './types';
 import { getCurrentUser } from './cabinet';
 import { getPlanPrices } from './admin';
+import { calculateNextPeriodEnd } from './calendar';
 
 export const billingRouter = new Hono<{ Bindings: Env }>();
 
@@ -195,7 +196,7 @@ billingRouter.post('/webhook', async (c) => {
   // Обновляем статус платежа
   if (payment) {
     await c.env.DB.prepare(`
-      UPDATE payments 
+      UPDATE payments
       SET payment_status = ?, pay_currency = COALESCE(?, pay_currency), updated_at = ?
       WHERE id = ?
     `).bind(payment_status, pay_currency || null, now, payment.id).run();
@@ -204,24 +205,33 @@ billingRouter.post('/webhook', async (c) => {
   // Если оплата успешно завершена (finished или confirmed в блокчейне)
   if (payment_status === 'finished' || payment_status === 'confirmed') {
     const orgId = payment?.org_id || order_id.split('_')[1];
-    const durationDays = payment?.duration_days || (order_id.includes('year') ? 365 : 30);
-    const addSeconds = durationDays * 86400;
 
     if (orgId) {
+      const isYear = (payment?.duration_days ?? 0) >= 365 || order_id.includes('year');
+
+      // Запрашиваем текущую подписку, чтобы сохранить календарное число и не сжечь остаток
+      const currentSub = await c.env.DB.prepare(
+        'SELECT plan_tier, current_period_end FROM subscriptions WHERE org_id = ?'
+      ).bind(orgId).first<{ plan_tier: string; current_period_end: number }>();
+
+      const targetPeriodEnd = calculateNextPeriodEnd(
+        currentSub?.current_period_end,
+        currentSub?.plan_tier,
+        isYear,
+        now
+      );
+
       await c.env.DB.prepare(`
         UPDATE subscriptions
         SET plan_tier = 'pro',
             status = 'active',
-            max_devices = 10,
+            max_devices = 3,
             max_dashboards = 50,
-            current_period_end = CASE 
-              WHEN current_period_end > ? THEN current_period_end + ?
-              ELSE ? + ?
-            END
+            current_period_end = ?
         WHERE org_id = ?
-      `).bind(now, addSeconds, now, addSeconds, orgId).run();
+      `).bind(targetPeriodEnd, orgId).run();
 
-      console.log(`[Billing] Pro plan successfully activated/extended for org ${orgId} on +${durationDays} days`);
+      console.log(`[Billing] Pro plan successfully activated/extended for org ${orgId} until ${targetPeriodEnd} (calendar sync, isYear=${isYear})`);
     }
   }
 

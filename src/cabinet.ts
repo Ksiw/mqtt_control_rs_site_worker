@@ -1,6 +1,6 @@
 import { Hono, Context } from 'hono';
 import { getCookie } from 'hono/cookie';
-import { Env, User, Organization, Workspace, Device } from './types';
+import { Env, User, Organization, Workspace, Device, getTierDeviceLimit } from './types';
 import { renderLoginHtml } from './login_view';
 import { renderCabinetHtml } from './cabinet_views';
 import { isSuperAdmin, getPlanPrices } from './admin';
@@ -12,7 +12,7 @@ export const cabinetRouter = new Hono<{ Bindings: Env }>();
  */
 export async function getCurrentUser(c: Context<{ Bindings: Env }>): Promise<User | null> {
   const token = getCookie(c, 'session');
-  if (!token) return null;
+  if (!token?.startsWith('sess_')) return null;
 
   const now = Math.floor(Date.now() / 1000);
   const session = await c.env.DB.prepare(`
@@ -87,19 +87,35 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     // Подписка и лимиты
     const sub = await c.env.DB.prepare(
       'SELECT * FROM subscriptions WHERE org_id = ?'
-    ).bind(currentOrg.id).first<{ plan_tier: string; status: string; current_period_end: number; max_devices: number }>();
+    ).bind(currentOrg.id).first<{ plan_tier: string; status: string; current_period_end: number; max_devices: number; trial_used: number }>();
 
     let isTrial = false;
     let daysLeft = 0;
+    let canTrial = false;
     if (sub) {
-      planTier = sub.plan_tier || 'free';
-      maxDevices = sub.max_devices || 1;
-      maxMembers = planTier === 'pro' ? 15 : planTier === 'enterprise' ? 9999 : 5;
-      if (sub.status === 'trialing') {
-        isTrial = true;
-        const now = Math.floor(Date.now() / 1000);
-        daysLeft = Math.max(0, Math.ceil((sub.current_period_end - now) / 86400));
+      const now = Math.floor(Date.now() / 1000);
+      if ((sub.plan_tier === 'pro' || sub.status === 'trialing') && sub.current_period_end && sub.current_period_end <= now) {
+        // Срок действия подписки Pro / триала истек - переводим на бесплатный тариф
+        await c.env.DB.prepare(`
+          UPDATE subscriptions
+          SET plan_tier = 'free', status = 'active', max_devices = 1, max_dashboards = 10
+          WHERE org_id = ?
+        `).bind(currentOrg.id).run();
+        planTier = 'free';
+        maxDevices = 1;
+        maxMembers = 5;
+      } else {
+        planTier = sub.plan_tier || 'free';
+        maxDevices = getTierDeviceLimit(planTier, sub.max_devices);
+        maxMembers = planTier === 'pro' ? 15 : planTier === 'enterprise' ? 9999 : 5;
+        if (sub.status === 'trialing') {
+          isTrial = true;
+          daysLeft = Math.max(0, Math.ceil((sub.current_period_end - now) / 86400));
+        } else if (planTier === 'pro' && sub.current_period_end) {
+          daysLeft = Math.max(0, Math.ceil((sub.current_period_end - now) / 86400));
+        }
       }
+      canTrial = isOwner && planTier === 'free' && (!sub.trial_used || sub.trial_used === 0);
     }
 
     // Члены семьи и организации
@@ -185,6 +201,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       isSuperAdmin: isSuperAdmin(user),
       isTrial,
       daysLeft,
+      canTrial,
       paymentNotification,
       planPrices
     }));
@@ -211,6 +228,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     maxMembers,
     isOwner: true,
     isSuperAdmin: isSuperAdmin(user),
+    canTrial: false,
     paymentNotification,
     planPrices
   }));
@@ -218,6 +236,52 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
 
 cabinetRouter.get('/', handleCabinet);
 cabinetRouter.get('/cabinet', handleCabinet);
+
+/**
+ * API активации 60-дневного пробного периода Pro в личном кабинете
+ * POST /api/v1/subscription/activate-trial
+ */
+cabinetRouter.post('/api/v1/subscription/activate-trial', async (c) => {
+  const user = await getCurrentUser(c);
+  if (!user) {
+    return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
+  }
+
+  const orgMember = await c.env.DB.prepare(`
+    SELECT o.id as org_id, s.plan_tier, s.status, s.trial_used, m.role as user_role
+    FROM organizations o
+    JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
+    LEFT JOIN subscriptions s ON s.org_id = o.id
+    WHERE m.role = 'owner' OR o.owner_user_id = ?
+    LIMIT 1
+  `).bind(user.id, user.id).first<{ org_id: string; plan_tier: string; status: string; trial_used: number; user_role: string }>();
+
+  if (!orgMember) {
+    return c.json({ status: 'error', message: 'Организация не найдена или у вас нет прав владельца' }, 403);
+  }
+
+  if (orgMember.trial_used && orgMember.trial_used > 0) {
+    return c.json({ status: 'error', message: 'Ознакомительный период Pro (60 дней) уже был использован ранее для этого аккаунта' }, 400);
+  }
+
+  if (orgMember.plan_tier !== 'free') {
+    return c.json({ status: 'error', message: 'Ознакомительный период доступен только на тарифе «Домашний (бесплатный)»' }, 400);
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const trialEnd = now + (60 * 86400);
+
+  await c.env.DB.prepare(`
+    UPDATE subscriptions
+    SET plan_tier = 'pro', status = 'trialing', max_devices = 3, max_dashboards = 50, trial_used = 1, current_period_end = ?
+    WHERE org_id = ?
+  `).bind(trialEnd, orgMember.org_id).run();
+
+  return c.json({
+    status: 'ok',
+    message: 'Вам успешно активирован ознакомительный период Pro на 60 дней (до 3 хостов и до 50 дашбордов)!'
+  });
+});
 
 /**
  * API выпуска нового ключа хоста
@@ -257,7 +321,7 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     return c.json({ status: 'error', message: 'Только владелец или администратор организации может создавать хосты' }, 403);
   }
 
-  const maxDevices = orgMember?.max_devices ?? 1;
+  const maxDevices = getTierDeviceLimit(orgMember?.plan_tier, orgMember?.max_devices);
   const currentDevCount = await c.env.DB.prepare(`
     SELECT COUNT(*) as count FROM devices d
     JOIN workspaces w ON d.workspace_id = w.id
@@ -271,8 +335,8 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     return c.json({
       status: 'error',
       message: orgMember?.trial_used === 1
-        ? 'Пробный период Pro (60 дней) уже был использован. В бесплатном тарифе доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
-        : 'В бесплатном тарифе доступен 1 хост. Чтобы перенести привязку на новый компьютер или подключить дополнительный хост, используйте кнопку связки в программе или оформите Pro.'
+        ? 'Пробный период Pro (60 дней) уже был использован. На тарифе «Домашний (бесплатный)» доступен 1 хост. Чтобы подключить дополнительный хост, оформите подписку Pro.'
+        : 'На тарифе «Домашний (бесплатный)» доступен 1 хост. Чтобы перенести привязку на новый компьютер или подключить дополнительный хост, используйте кнопку связки в программе или оформите Pro.'
     }, 403);
   }
 
@@ -402,4 +466,3 @@ cabinetRouter.get('/api/v1/cabinet/state', async (c) => {
     dashboards
   });
 });
-

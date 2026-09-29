@@ -16,6 +16,7 @@ crons = ["* * * * *"]
 [vars]
 ENVIRONMENT = "production"
 HUB_DOMAIN = "https://mqtt-control-rs.pages.dev"
+GOOGLE_DESKTOP_CLIENT_ID = "617325553995-6sfcer72kj3h11s8lol9sbfsiun1uvtl.apps.googleusercontent.com"
 
 [durable_objects]
 bindings = [

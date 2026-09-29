@@ -6,6 +6,8 @@ export interface Env {
   HUB_DOMAIN: string;
   TUNNEL_DO: DurableObjectNamespace;
   GOOGLE_CLIENT_ID?: string;
+  GOOGLE_DESKTOP_CLIENT_ID?: string;
+  LICENSE_SIGNING_KEY?: string;
   GOOGLE_CLIENT_SECRET?: string;
   SESSION_SECRET?: string;
   NOWPAYMENTS_API_KEY?: string;
@@ -89,4 +91,23 @@ export interface HeartbeatPayload {
     active_pilots?: number;
     ram_used_mb?: number;
   };
+}
+
+/**
+ * Возвращает актуальный лимит хост-программ для тарифного плана.
+ * Для Free — 1.
+ * Для Pro — строго 3.
+ * Для Enterprise — задается вручную (по умолчанию 50, если не указано).
+ */
+export function getTierDeviceLimit(
+  planTier: string | null | undefined,
+  customMaxDevices?: number | null
+): number {
+  if (planTier === 'enterprise') {
+    return (customMaxDevices && customMaxDevices > 0) ? customMaxDevices : 50;
+  }
+  if (planTier === 'pro') {
+    return 3;
+  }
+  return 1;
 }

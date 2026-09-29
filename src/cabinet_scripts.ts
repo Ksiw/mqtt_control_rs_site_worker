@@ -267,6 +267,35 @@ export function renderCabinetScripts(currentWsId: string): string {
         document.getElementById('qrModal').style.display = 'none';
       }
 
+      async function activateTrial() {
+        if (!confirm('Активировать ознакомительный период Pro на 60 дней бесплатно?')) {
+          return;
+        }
+        const btns = [
+          document.getElementById('activateTrialBtn'),
+          document.getElementById('activateTrialModalBtn')
+        ].filter(Boolean);
+        btns.forEach(b => { b.disabled = true; b.textContent = 'Активация...'; });
+
+        try {
+          const res = await fetch('/api/v1/subscription/activate-trial', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' }
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            alert(data.message || 'Ознакомительный период Pro на 60 дней успешно активирован!');
+            window.location.href = '/cabinet';
+          } else {
+            alert(data.message || 'Не удалось активировать пробный период');
+            btns.forEach(b => { b.disabled = false; b.textContent = '✨ Активировать бесплатно'; });
+          }
+        } catch (err) {
+          alert('Сетевая ошибка при активации пробного периода');
+          btns.forEach(b => { b.disabled = false; b.textContent = '✨ Активировать бесплатно'; });
+        }
+      }
+
       function openProModal() {
         const modal = document.getElementById('proModal');
         if (modal) {

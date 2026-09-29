@@ -126,10 +126,24 @@ authRouter.get('/callback', async (c) => {
     picture?: string;
   };
 
+  const sessionToken = await createUserSession(c.env.DB, profile);
+  setCookie(c, 'session', sessionToken, {
+    path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 30 * 86400
+  });
+  deleteCookie(c, 'oauth_state');
+  return c.redirect('/cabinet');
+});
+
+export async function createUserSession(db: D1Database, profile: {
+  id: string;
+  email: string;
+  name?: string;
+  picture?: string;
+}): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
 
   // 3. Сохранение или обновление пользователя в D1
-  const existingUser = await c.env.DB.prepare(
+  const existingUser = await db.prepare(
     'SELECT * FROM users WHERE google_id = ? OR email = ? LIMIT 1'
   ).bind(profile.id, profile.email).first<User>();
 
@@ -142,51 +156,51 @@ authRouter.get('/callback', async (c) => {
     const wsId = `ws_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
     // Создаём пользователя, его персональную организацию, подписку Free и базовое пространство
-    await c.env.DB.batch([
-      c.env.DB.prepare(`
+    await db.batch([
+      db.prepare(`
         INSERT INTO users (id, google_id, email, name, avatar_url, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).bind(userId, profile.id, profile.email, profile.name || null, profile.picture || null, now, now),
 
-      c.env.DB.prepare(`
+      db.prepare(`
         INSERT INTO organizations (id, slug, name, owner_user_id, created_at)
         VALUES (?, ?, ?, ?, ?)
       `).bind(orgId, defaultSlug, `Организация ${profile.name || profile.email}`, userId, now),
 
-      c.env.DB.prepare(`
+      db.prepare(`
         INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices, max_dashboards, current_period_end, created_at)
-        VALUES (?, ?, 'free', 'active', 1, 1, 10, ?, ?)
-      `).bind(`sub_${crypto.randomUUID().substring(0, 8)}`, orgId, now + (365 * 86400), now),
+        VALUES (?, ?, 'free', 'active', 1, 1, 10, 0, ?)
+      `).bind(`sub_${crypto.randomUUID().substring(0, 8)}`, orgId, now),
 
-      c.env.DB.prepare(`
+      db.prepare(`
         INSERT INTO organization_members (org_id, user_id, role, created_at)
         VALUES (?, ?, 'owner', ?)
       `).bind(orgId, userId, now),
 
-      c.env.DB.prepare(`
+      db.prepare(`
         INSERT INTO workspaces (id, org_id, slug, name, description, created_at)
         VALUES (?, ?, 'main', 'Основное пространство', 'Автоматически созданное рабочее пространство', ?)
       `).bind(wsId, orgId, now)
     ]);
   } else {
     // Обновляем время входа
-    await c.env.DB.prepare(
+    await db.prepare(
       'UPDATE users SET last_login_at = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?'
     ).bind(now, profile.name || null, profile.picture || null, userId).run();
   }
 
   // Проверяем, есть ли для этого email приглашения в семью / организацию
-  const pendingInvites = await c.env.DB.prepare(
+  const pendingInvites = await db.prepare(
     'SELECT * FROM invites WHERE lower(email) = lower(?)'
   ).bind(profile.email).all<{ id: string; org_id: string; role: string }>();
 
   if (pendingInvites.results && pendingInvites.results.length > 0) {
     for (const inv of pendingInvites.results) {
-      await c.env.DB.prepare(`
+      await db.prepare(`
         INSERT OR IGNORE INTO organization_members (org_id, user_id, role, created_at)
         VALUES (?, ?, ?, ?)
       `).bind(inv.org_id, userId, inv.role || 'operator', now).run();
-      await c.env.DB.prepare('DELETE FROM invites WHERE id = ?').bind(inv.id).run();
+      await db.prepare('DELETE FROM invites WHERE id = ?').bind(inv.id).run();
     }
   }
 
@@ -194,25 +208,13 @@ authRouter.get('/callback', async (c) => {
   const sessionToken = `sess_${crypto.randomUUID().replace(/-/g, '')}`;
   const expiresAt = now + (30 * 86400);
 
-  await c.env.DB.prepare(`
+  await db.prepare(`
     INSERT INTO user_sessions (token, user_id, expires_at, created_at)
     VALUES (?, ?, ?, ?)
   `).bind(sessionToken, userId, expiresAt, now).run();
 
-  // Устанавливаем защищённую cookie сессии
-  setCookie(c, 'session', sessionToken, {
-    path: '/',
-    secure: true,
-    httpOnly: true,
-    sameSite: 'Lax',
-    maxAge: 30 * 86400
-  });
-
-  deleteCookie(c, 'oauth_state');
-
-  // Перенаправляем в личный кабинет
-  return c.redirect('/cabinet');
-});
+  return sessionToken;
+}
 
 /**
  * Выход из аккаунта
@@ -225,4 +227,35 @@ authRouter.get('/logout', async (c) => {
   }
   deleteCookie(c, 'session');
   return c.redirect('/cabinet');
+});
+
+authRouter.get('/desktop', async (c) => {
+  const ticket = c.req.query('ticket') || '';
+  if (!/^link_[a-f0-9]{64}$/.test(ticket)) return c.text('Недействительная ссылка входа', 400);
+  const pairCode = c.req.query('pair');
+  if (pairCode && !/^\d{3}-\d{3}$/.test(pairCode)) return c.text('Недействительный код привязки', 400);
+
+  const now = Math.floor(Date.now() / 1000);
+  const consumed = await c.env.DB.prepare(`
+    DELETE FROM user_sessions
+    WHERE token = ? AND expires_at > ?
+    RETURNING user_id
+  `).bind(ticket, now).first<{ user_id: string }>();
+  if (!consumed) return c.text('Ссылка входа истекла или уже использована', 401);
+
+  const previousSession = getCookie(c, 'session');
+  if (previousSession) {
+    await c.env.DB.prepare('DELETE FROM user_sessions WHERE token = ?').bind(previousSession).run();
+  }
+  const sessionToken = `sess_${crypto.randomUUID().replace(/-/g, '')}`;
+  await c.env.DB.prepare(`
+    INSERT INTO user_sessions (token, user_id, expires_at, created_at)
+    VALUES (?, ?, ?, ?)
+  `).bind(sessionToken, consumed.user_id, now + 30 * 86400, now).run();
+  setCookie(c, 'session', sessionToken, {
+    path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 30 * 86400
+  });
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
+  return c.redirect(pairCode ? `/cabinet?pair=${pairCode}` : '/cabinet');
 });

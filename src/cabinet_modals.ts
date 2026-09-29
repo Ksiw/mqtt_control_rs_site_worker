@@ -1,14 +1,14 @@
 /**
  * HTML-разметка диалоговых модальных окон личного кабинета
  */
-export function renderCabinetModals(planPrices?: { month: number; year: number }): string {
+export function renderCabinetModals(planPrices?: { month: number; year: number }, canTrial?: boolean): string {
   const pMonth = (planPrices?.month ?? 12.0).toFixed(2);
   const pYear = (planPrices?.year ?? 100.0).toFixed(2);
   return `
-    <!-- Модальное окно приглашения члена семьи -->
+    <!-- Модальное окно приглашения пользователя -->
     <div id="inviteModal" class="modal-overlay">
       <div class="modal-box">
-        <div class="modal-title">Пригласить члена семьи</div>
+        <div class="modal-title">Пригласить пользователя</div>
         <p style="font-size:13px; color:#94a3b8; margin-bottom:16px;">
           Укажите адрес электронной почты Google. Человек сможет войти в этот кабинет со своего телефона через Google и смотреть дашборды.
         </p>
@@ -59,7 +59,7 @@ export function renderCabinetModals(planPrices?: { month: number; year: number }
         </div>
 
         <div id="pairConflictBlock" style="display:none; background:#18181b; border:1px solid #713f12; border-radius:8px; padding:14px; margin-bottom:16px; text-align:left; font-size:13px;">
-          <div style="color:#fbbf24; font-weight:600; margin-bottom:6px;">⚠ На бесплатном тарифе доступен 1 хост</div>
+          <div style="color:#fbbf24; font-weight:600; margin-bottom:6px;">⚠ На тарифе «Домашний (бесплатный)» доступен 1 хост</div>
           <div style="color:#e4e4e7;">Сейчас подключен: <strong id="pairExistingName">—</strong> (<span id="pairExistingStatus">—</span>)</div>
           <div style="color:#a1a1aa; font-size:12px; margin-top:6px;">
             Переносов за последние 30 дней: <strong id="pairTransfersUsed">0</strong> из <strong>4</strong>.
@@ -121,9 +121,26 @@ export function renderCabinetModals(planPrices?: { month: number; year: number }
           <button onclick="closeProModal()" style="background:none; border:none; color:#64748b; font-size:18px; cursor:pointer;">✕</button>
         </div>
         <p style="font-size: 13px; color: #94a3b8; margin-bottom: 18px; line-height: 1.5; text-align: left;">
-          Тариф Pro расширяет возможности: до 10 хост-программ, до 50 дашбордов и до 15 членов семьи / операторов.
+          Тариф Pro расширяет возможности: до 3 хост-программ, до 50 дашбордов и до 15 пользователей.
         </p>
-        
+
+        ${canTrial ? `
+          <div style="background:linear-gradient(135deg, #1e1b4b, #312e81); border:1px solid #6366f1; border-radius:8px; padding:14px; margin-bottom:18px; text-align:left;">
+            <div style="font-weight:600; color:#e0e7ff; font-size:14px; margin-bottom:4px;">🎁 Попробуйте бесплатно на 60 дней</div>
+            <p style="font-size:12px; color:#c7d2fe; margin-bottom:12px; line-height:1.4;">
+              Вам доступен полный пробный тариф Pro на 60 дней (до 3 хостов, до 50 дашбордов, до 15 участников). Привязка карты не требуется.
+            </p>
+            <button type="button" id="activateTrialModalBtn" onclick="activateTrial()" class="btn-primary" style="background:#6366f1; width:100%; padding:10px; font-weight:600;">
+              ✨ Активировать 60 дней Pro бесплатно
+            </button>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px; margin-bottom:16px;">
+            <div style="flex:1; height:1px; background:#334155;"></div>
+            <span style="font-size:11px; color:#64748b; text-transform:uppercase;">или оплатите подписку</span>
+            <div style="flex:1; height:1px; background:#334155;"></div>
+          </div>
+        ` : ''}
+
         <div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 20px;">
           <label style="display:flex; align-items:center; justify-content:space-between; background:#0f1217; border:1px solid #334155; padding:14px; border-radius:8px; cursor:pointer;">
             <div>
