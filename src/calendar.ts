@@ -11,8 +11,13 @@
  * дата фиксируется на последнем дне целевого месяца (28 или 29 февраля).
  */
 export function addCalendarMonths(fromUnixSeconds: number, months: number): number {
+  const day = new Date(fromUnixSeconds * 1000).getUTCDate();
+  return addCalendarMonthsOnDay(fromUnixSeconds, months, day);
+}
+
+/** Сохраняет исходный день оплаты при продлении после короткого месяца. */
+export function addCalendarMonthsOnDay(fromUnixSeconds: number, months: number, anchorDay: number): number {
   const d = new Date(fromUnixSeconds * 1000);
-  const targetDay = d.getUTCDate();
   const targetMonth = d.getUTCMonth() + months;
 
   // Устанавливаем 1-е число месяца, чтобы избежать промежуточного переполнения
@@ -24,7 +29,7 @@ export function addCalendarMonths(fromUnixSeconds: number, months: number): numb
   const daysInTargetMonth = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
 
   // Возвращаем либо то же исходное число (например, 10), либо последний возможный день месяца
-  d.setUTCDate(Math.min(targetDay, daysInTargetMonth));
+  d.setUTCDate(Math.min(anchorDay, daysInTargetMonth));
 
   return Math.floor(d.getTime() / 1000);
 }
@@ -47,12 +52,15 @@ export function calculateNextPeriodEnd(
   currentPeriodEnd: number | undefined | null,
   planTier: string | undefined | null,
   isYear: boolean,
-  nowSeconds: number
+  nowSeconds: number,
+  billingAnchorDay?: number | null
 ): number {
   const hasActivePro = (planTier === 'pro') && currentPeriodEnd && currentPeriodEnd > nowSeconds;
   const baseTime = hasActivePro ? currentPeriodEnd : nowSeconds;
+  const anchorDay = hasActivePro && billingAnchorDay && billingAnchorDay >= 1 && billingAnchorDay <= 31
+    ? billingAnchorDay : new Date(baseTime * 1000).getUTCDate();
 
   return isYear
-    ? addCalendarYears(baseTime, 1)
-    : addCalendarMonths(baseTime, 1);
+    ? addCalendarMonthsOnDay(baseTime, 12, anchorDay)
+    : addCalendarMonthsOnDay(baseTime, 1, anchorDay);
 }

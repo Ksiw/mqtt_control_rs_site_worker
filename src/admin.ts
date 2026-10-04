@@ -1,24 +1,14 @@
 import { Hono } from 'hono';
-import { Env, User } from './types';
-import { getCurrentUser } from './cabinet';
-import { addCalendarMonths, addCalendarYears } from './calendar';
+import { Env } from './types';
+import { getCurrentUser } from './core/session';
+import { isSuperAdmin } from './core/admin_access';
+import { getPlanPrices } from './core/pricing';
+import { addCalendarMonthsOnDay, addCalendarYears } from './calendar';
+
+export { SUPERADMIN_EMAILS, isSuperAdmin } from './core/admin_access';
+export { getPlanPrices } from './core/pricing';
 
 export const adminRouter = new Hono<{ Bindings: Env }>();
-
-/**
- * Список супер-администраторов системы (только Marcus)
- */
-export const SUPERADMIN_EMAILS = [
-  '754marcus@gmail.com'
-];
-
-/**
- * Проверка прав супер-администратора
- */
-export function isSuperAdmin(user: User | null): boolean {
-  if (!user || !user.email) return false;
-  return SUPERADMIN_EMAILS.includes(user.email.toLowerCase().trim());
-}
 
 /**
  * Получить список всех пользователей с их подписками
@@ -26,7 +16,7 @@ export function isSuperAdmin(user: User | null): boolean {
  */
 adminRouter.get('/users', async (c) => {
   const user = await getCurrentUser(c);
-  if (!isSuperAdmin(user)) {
+  if (!isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID)) {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
@@ -67,18 +57,24 @@ adminRouter.get('/users', async (c) => {
  */
 adminRouter.post('/license/grant', async (c) => {
   const user = await getCurrentUser(c);
-  if (!isSuperAdmin(user)) {
+  if (!isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID)) {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
-  const { email, tier, duration, max_devices } = (await c.req.json().catch(() => ({}))) as {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { email, tier, duration, max_devices } = body as {
     email?: string;
     tier?: 'pro' | 'enterprise';
     duration?: 'month' | 'year' | 'lifetime';
     max_devices?: number;
   };
 
-  if (!email) {
+  if (typeof email !== 'string' || !email.trim() || email.length > 254 ||
+      (max_devices !== undefined &&
+        (typeof max_devices !== 'number' || !Number.isFinite(max_devices) || max_devices < 1))) {
     return c.json({ status: 'error', message: 'Не указан email пользователя' }, 400);
   }
 
@@ -119,35 +115,42 @@ adminRouter.post('/license/grant', async (c) => {
   const now = Math.floor(Date.now() / 1000);
   const existingSub = await c.env.DB.prepare(
     'SELECT * FROM subscriptions WHERE org_id = ?'
-  ).bind(org.id).first<{ id: string; current_period_end: number; plan_tier: string }>();
+  ).bind(org.id).first<{ id: string; current_period_end: number; plan_tier: string; billing_anchor_day: number | null }>();
 
   let periodEnd = now;
   if (existingSub && existingSub.current_period_end > now && existingSub.plan_tier === planTier) {
     periodEnd = existingSub.current_period_end;
   }
+  const storedAnchor = existingSub?.billing_anchor_day;
+  const anchorDay = periodEnd > now && typeof storedAnchor === 'number' &&
+    Number.isInteger(storedAnchor) && storedAnchor >= 1 && storedAnchor <= 31
+    ? storedAnchor : new Date(periodEnd * 1000).getUTCDate();
 
   if (duration === 'month') {
-    periodEnd = addCalendarMonths(periodEnd, 1);
+    periodEnd = addCalendarMonthsOnDay(periodEnd, 1, anchorDay);
   } else if (duration === 'year') {
-    periodEnd = addCalendarYears(periodEnd, 1);
+    periodEnd = addCalendarMonthsOnDay(periodEnd, 12, anchorDay);
   } else if (duration === 'lifetime') {
     periodEnd = addCalendarYears(now, 50); // 50 лет
   } else {
-    periodEnd = addCalendarMonths(periodEnd, 1); // по умолчанию календарный месяц
+    periodEnd = addCalendarMonthsOnDay(periodEnd, 1, anchorDay); // по умолчанию календарный месяц
   }
 
   if (existingSub) {
     await c.env.DB.prepare(`
       UPDATE subscriptions
-      SET plan_tier = ?, status = 'active', max_devices = ?, max_dashboards = ?, max_workspaces = ?, current_period_end = ?
+      SET plan_tier = ?, status = 'active', max_devices = ?, max_dashboards = ?, max_workspaces = ?,
+          current_period_end = ?, billing_anchor_day = ?
       WHERE org_id = ?
-    `).bind(planTier, limitDevices, limitDashboards, limitWorkspaces, periodEnd, org.id).run();
+    `).bind(planTier, limitDevices, limitDashboards, limitWorkspaces, periodEnd, anchorDay, org.id).run();
   } else {
     const subId = `sub_${crypto.randomUUID().replace(/-/g, '').slice(0, 8)}`;
     await c.env.DB.prepare(`
-      INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices, max_dashboards, current_period_end, created_at)
-      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)
-    `).bind(subId, org.id, planTier, limitWorkspaces, limitDevices, limitDashboards, periodEnd, now).run();
+      INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices,
+                                 max_dashboards, current_period_end, billing_anchor_day, created_at)
+      VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
+    `).bind(subId, org.id, planTier, limitWorkspaces, limitDevices, limitDashboards,
+      periodEnd, anchorDay, now).run();
   }
 
   const tierLabel = planTier === 'enterprise' ? 'Enterprise' : 'Pro';
@@ -165,12 +168,16 @@ adminRouter.post('/license/grant', async (c) => {
  */
 adminRouter.post('/license/revoke', async (c) => {
   const user = await getCurrentUser(c);
-  if (!isSuperAdmin(user)) {
+  if (!isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID)) {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
-  const { email } = (await c.req.json().catch(() => ({}))) as { email?: string };
-  if (!email) {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { email } = body as { email?: string };
+  if (typeof email !== 'string' || !email.trim() || email.length > 254) {
     return c.json({ status: 'error', message: 'Не указан email пользователя' }, 400);
   }
 
@@ -203,39 +210,12 @@ adminRouter.post('/license/revoke', async (c) => {
 });
 
 /**
- * Получить системные цены на подписку
- */
-export async function getPlanPrices(db: D1Database): Promise<{ month: number; year: number }> {
-  try {
-    const rows = await db.prepare(
-      "SELECT key, value FROM system_settings WHERE key IN ('price_month_usd', 'price_year_usd')"
-    ).all<{ key: string; value: string }>();
-
-    let month = 12.0;
-    let year = 100.0;
-
-    for (const r of rows.results || []) {
-      if (r.key === 'price_month_usd') {
-        const val = parseFloat(r.value);
-        if (!isNaN(val) && val > 0) month = val;
-      } else if (r.key === 'price_year_usd') {
-        const val = parseFloat(r.value);
-        if (!isNaN(val) && val > 0) year = val;
-      }
-    }
-    return { month, year };
-  } catch {
-    return { month: 12.0, year: 100.0 };
-  }
-}
-
-/**
  * Получить текущие цены (для админки)
  * GET /api/v1/admin/pricing
  */
 adminRouter.get('/pricing', async (c) => {
   const user = await getCurrentUser(c);
-  if (!isSuperAdmin(user)) {
+  if (!isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID)) {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
@@ -250,16 +230,22 @@ adminRouter.get('/pricing', async (c) => {
  */
 adminRouter.post('/pricing', async (c) => {
   const user = await getCurrentUser(c);
-  if (!isSuperAdmin(user)) {
+  if (!isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID)) {
     return c.json({ status: 'error', message: 'Доступ запрещён' }, 403);
   }
 
-  const { month, year } = (await c.req.json().catch(() => ({}))) as {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { month, year } = body as {
     month?: number;
     year?: number;
   };
 
-  if (typeof month !== 'number' || typeof year !== 'number' || month <= 0 || year <= 0) {
+  if (typeof month !== 'number' || typeof year !== 'number' ||
+      !Number.isFinite(month) || !Number.isFinite(year) ||
+      month < 0.01 || year < 0.01 || month > 1000000 || year > 1000000) {
     return c.json({ status: 'error', message: 'Некорректные цены' }, 400);
   }
 

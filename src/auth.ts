@@ -1,7 +1,6 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Env, User } from './types';
-import { sha256Hex } from './crypto';
 
 export const authRouter = new Hono<{ Bindings: Env }>();
 
@@ -19,12 +18,8 @@ authRouter.get('/google', async (c) => {
   const origin = c.env.HUB_DOMAIN || `${new URL(c.req.url).origin}`;
   const redirectUri = `${origin}/auth/callback`;
 
-  // Формируем криптографически подписанный state токен (не зависит от проблем с cookie в браузерах)
-  const now = Math.floor(Date.now() / 1000);
   const nonce = crypto.randomUUID().replace(/-/g, '');
-  const secret = c.env.SESSION_SECRET || 'mcrs_oauth_hub_secret_salt';
-  const sig = await sha256Hex(`${nonce}:${now}:${secret}`);
-  const state = `${nonce}_${now}_${sig}`;
+  const state = nonce;
 
   // Сохраняем state в cookie на 15 минут
   setCookie(c, 'oauth_state', state, {
@@ -33,6 +28,13 @@ authRouter.get('/google', async (c) => {
     httpOnly: true,
     sameSite: 'Lax',
     maxAge: 900
+  });
+  const requestedReturn = c.req.query('return') || '';
+  const returnTo = /^\/(?:ru|en)\/wiki(?:#article=[a-zA-Z0-9_-]{1,100})?$/.test(requestedReturn)
+    ? requestedReturn
+    : '/cabinet';
+  setCookie(c, 'oauth_return', returnTo, {
+    path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 900
   });
 
   const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
@@ -55,30 +57,7 @@ authRouter.get('/callback', async (c) => {
   const state = c.req.query('state');
   const savedState = getCookie(c, 'oauth_state');
 
-  // Двойная проверка безопасности: по cookie или по криптографической подписи state
-  let isStateValid = false;
-  if (state) {
-    if (savedState && state === savedState) {
-      isStateValid = true;
-    } else {
-      const parts = state.split('_');
-      if (parts.length === 3) {
-        const [nonce, tsStr, sig] = parts;
-        const ts = parseInt(tsStr, 10);
-        const now = Math.floor(Date.now() / 1000);
-        // Допустимый срок жизни — 15 минут
-        if (!isNaN(ts) && Math.abs(now - ts) < 900) {
-          const secret = c.env.SESSION_SECRET || 'mcrs_oauth_hub_secret_salt';
-          const expectedSig = await sha256Hex(`${nonce}:${tsStr}:${secret}`);
-          if (sig === expectedSig) {
-            isStateValid = true;
-          }
-        }
-      }
-    }
-  }
-
-  if (!code || !isStateValid) {
+  if (!code || !state || !savedState || state !== savedState) {
     return c.text('Ошибка проверки безопасности OAuth (неверный параметр state)', 400);
   }
 
@@ -111,7 +90,7 @@ authRouter.get('/callback', async (c) => {
   const tokenData = await tokenResponse.json() as { access_token: string; id_token: string };
 
   // 2. Получение данных профиля пользователя от Google
-  const userinfoResponse = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+  const userinfoResponse = await fetch('https://openidconnect.googleapis.com/v1/userinfo', {
     headers: { Authorization: `Bearer ${tokenData.access_token}` }
   });
 
@@ -120,19 +99,36 @@ authRouter.get('/callback', async (c) => {
   }
 
   const profile = await userinfoResponse.json() as {
-    id: string;
+    sub: string;
     email: string;
+    email_verified: boolean;
     name?: string;
     picture?: string;
   };
+  if (!profile.sub || !profile.email || profile.email_verified !== true) {
+    return c.text('Адрес электронной почты Google не подтверждён', 403);
+  }
 
-  const sessionToken = await createUserSession(c.env.DB, profile);
+  let sessionToken: string;
+  try {
+    sessionToken = await createUserSession(c.env.DB, { id: profile.sub, email: profile.email,
+      name: profile.name, picture: profile.picture });
+  } catch (error) {
+    if (error instanceof AccountIdentityConflictError) {
+      return c.text('Этот адрес уже связан с другим аккаунтом Google', 409);
+    }
+    throw error;
+  }
   setCookie(c, 'session', sessionToken, {
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 30 * 86400
   });
   deleteCookie(c, 'oauth_state');
-  return c.redirect('/cabinet');
+  const returnTo = getCookie(c, 'oauth_return') || '/cabinet';
+  deleteCookie(c, 'oauth_return');
+  return c.redirect(/^\/(?:ru|en)\/wiki(?:#article=[a-zA-Z0-9_-]{1,100})?$/.test(returnTo) ? returnTo : '/cabinet');
 });
+
+export class AccountIdentityConflictError extends Error {}
 
 export async function createUserSession(db: D1Database, profile: {
   id: string;
@@ -141,18 +137,26 @@ export async function createUserSession(db: D1Database, profile: {
   picture?: string;
 }): Promise<string> {
   const now = Math.floor(Date.now() / 1000);
+  const email = profile.email.toLowerCase().trim();
 
   // 3. Сохранение или обновление пользователя в D1
   const existingUser = await db.prepare(
-    'SELECT * FROM users WHERE google_id = ? OR email = ? LIMIT 1'
-  ).bind(profile.id, profile.email).first<User>();
+    'SELECT * FROM users WHERE google_id = ? LIMIT 1'
+  ).bind(profile.id).first<User>();
+  const emailOwner = await db.prepare(
+    'SELECT id, google_id FROM users WHERE lower(email) = ? LIMIT 1'
+  ).bind(email).first<{ id: string; google_id: string }>();
+  if (emailOwner && emailOwner.google_id !== profile.id) {
+    throw new AccountIdentityConflictError('Email belongs to another Google account');
+  }
 
   let userId = existingUser?.id;
 
   if (!existingUser) {
     userId = `usr_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const orgId = `org_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
-    const defaultSlug = profile.email.split('@')[0].toLowerCase().replace(/[^a-z0-9]/g, '');
+    const slugBase = email.split('@')[0].replace(/[^a-z0-9]/g, '') || 'user';
+    const defaultSlug = `${slugBase}-${orgId.slice(4)}`;
     const wsId = `ws_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
 
     // Создаём пользователя, его персональную организацию, подписку Free и базовое пространство
@@ -160,12 +164,12 @@ export async function createUserSession(db: D1Database, profile: {
       db.prepare(`
         INSERT INTO users (id, google_id, email, name, avatar_url, created_at, last_login_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).bind(userId, profile.id, profile.email, profile.name || null, profile.picture || null, now, now),
+      `).bind(userId, profile.id, email, profile.name || null, profile.picture || null, now, now),
 
       db.prepare(`
         INSERT INTO organizations (id, slug, name, owner_user_id, created_at)
         VALUES (?, ?, ?, ?, ?)
-      `).bind(orgId, defaultSlug, `Организация ${profile.name || profile.email}`, userId, now),
+      `).bind(orgId, defaultSlug, `Организация ${profile.name || email}`, userId, now),
 
       db.prepare(`
         INSERT INTO subscriptions (id, org_id, plan_tier, status, max_workspaces, max_devices, max_dashboards, current_period_end, created_at)
@@ -185,14 +189,14 @@ export async function createUserSession(db: D1Database, profile: {
   } else {
     // Обновляем время входа
     await db.prepare(
-      'UPDATE users SET last_login_at = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?'
-    ).bind(now, profile.name || null, profile.picture || null, userId).run();
+      'UPDATE users SET email = ?, last_login_at = ?, name = COALESCE(?, name), avatar_url = COALESCE(?, avatar_url) WHERE id = ?'
+    ).bind(email, now, profile.name || null, profile.picture || null, userId).run();
   }
 
   // Проверяем, есть ли для этого email приглашения в семью / организацию
   const pendingInvites = await db.prepare(
     'SELECT * FROM invites WHERE lower(email) = lower(?)'
-  ).bind(profile.email).all<{ id: string; org_id: string; role: string }>();
+  ).bind(email).all<{ id: string; org_id: string; role: string }>();
 
   if (pendingInvites.results && pendingInvites.results.length > 0) {
     for (const inv of pendingInvites.results) {

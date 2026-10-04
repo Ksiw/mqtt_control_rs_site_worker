@@ -82,7 +82,7 @@ export class DeviceTunnel {
     }
 
     // Б) Обычный HTTP запрос (HTML, JSON, commands)
-    const reqId = 'req_' + Math.random().toString(36).slice(2, 10);
+    const reqId = 'req_' + crypto.randomUUID();
     const method = request.method;
     const path = url.pathname + url.search;
 
@@ -123,10 +123,10 @@ export class DeviceTunnel {
 
       try {
         this.deviceWs!.send(payload);
-      } catch (err: any) {
+      } catch (_) {
         clearTimeout(timer);
         this.pendingRequests.delete(reqId);
-        resolve(new Response(JSON.stringify({ error: 'device_send_failed', message: err?.message || 'Ошибка передачи' }), {
+        resolve(new Response(JSON.stringify({ error: 'device_send_failed', message: 'Ошибка передачи' }), {
           status: 502,
           headers: { 'Content-Type': 'application/json' }
         }));
@@ -146,6 +146,7 @@ export class DeviceTunnel {
     this.deviceWs = ws;
 
     ws.addEventListener('message', (event) => {
+      if (this.deviceWs !== ws) return;
       try {
         const msg = JSON.parse(event.data as string);
         if (msg.type === 'http_response' && msg.id) {

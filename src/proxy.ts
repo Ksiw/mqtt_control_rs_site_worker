@@ -1,35 +1,12 @@
-import { Hono } from 'hono';
-import { getCookie, setCookie } from 'hono/cookie';
+import { Context, Hono } from 'hono';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { Env, Device } from './types';
-import { getCurrentUser } from './cabinet';
+import { buildCleanHeaders, storedOperatorToken, tunnelTarget, proxyResponse } from './proxy/shared';
+import { getCurrentUser } from './core/session';
 
 export const proxyRouter = new Hono<{ Bindings: Env }>();
 
-/**
- * Очищает заголовки перед отправкой в туннель Cloudflare.
- * Удаление cf-*, cdn-loop предотвращает ошибку Error 1033 (петля Cloudflare Edge).
- */
-function buildCleanHeaders(incoming: Headers, targetHost: string): Headers {
-  const clean = new Headers();
-  incoming.forEach((val, key) => {
-    const k = key.toLowerCase();
-    if (
-      !k.startsWith('cf-') &&
-      k !== 'cdn-loop' &&
-      k !== 'host' &&
-      k !== 'x-forwarded-for' &&
-      k !== 'x-forwarded-proto' &&
-      k !== 'x-forwarded-host'
-    ) {
-      clean.set(key, val);
-    }
-  });
-  clean.set('Host', targetHost);
-  return clean;
-}
-
-
-const handleDashboardProxy = async (c: any) => {
+const handleDashboardProxy = async (c: Context<{ Bindings: Env }>) => {
   const user = await getCurrentUser(c);
   if (!user) {
     return c.redirect('/cabinet');
@@ -39,26 +16,30 @@ const handleDashboardProxy = async (c: any) => {
 
   // 1. Поиск рабочего пространства и дашборда с проверкой членства в организации
   const query = `
-    SELECT d.id as dash_id, d.slug as dash_path, d.device_id, w.id as workspace_id
+    SELECT d.id as dash_id, d.slug as dash_path, linked_device.id as device_id,
+           w.id as workspace_id, m.role as member_role
     FROM dashboards d
     JOIN workspaces w ON d.workspace_id = w.id
+    LEFT JOIN devices linked_device ON linked_device.id = d.device_id
+      AND linked_device.workspace_id = w.id
     JOIN organizations o ON w.org_id = o.id
     JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
     WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
     LIMIT 1
   `;
-  const dashInfo = (await (c.env.DB.prepare(query) as any)
+  const dashInfo = await c.env.DB.prepare(query)
     .bind(user.id, org_slug, ws_slug, dash_id, `%${dash_id}%`)
-    .first()) as { dash_id: string; dash_path: string; device_id?: string; workspace_id: string } | null;
+    .first<{ dash_id: string; dash_path: string; device_id?: string;
+      workspace_id: string; member_role: string }>();
 
   if (!dashInfo) {
-    const exists = await (c.env.DB.prepare(`
+    const exists = await c.env.DB.prepare(`
       SELECT 1 FROM dashboards d
       JOIN workspaces w ON d.workspace_id = w.id
       JOIN organizations o ON w.org_id = o.id
       WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
       LIMIT 1
-    `) as any).bind(org_slug, ws_slug, dash_id, `%${dash_id}%`).first();
+    `).bind(org_slug, ws_slug, dash_id, `%${dash_id}%`).first();
 
     if (exists) {
       return c.html(`
@@ -76,6 +57,12 @@ const handleDashboardProxy = async (c: any) => {
     return c.text('Дашборд или рабочее пространство не найдено', 404);
   }
 
+  if (dashInfo.member_role === 'viewer' &&
+      (!['GET', 'HEAD'].includes(c.req.method) ||
+        c.req.header('Upgrade')?.toLowerCase() === 'websocket')) {
+    return c.text('Недостаточно прав для управления дашбордом', 403);
+  }
+
   // Запоминаем текущее рабочее пространство и устройство в cookie
   setCookie(c, 'last_ws_id', dashInfo.workspace_id, {
     path: '/',
@@ -83,6 +70,10 @@ const handleDashboardProxy = async (c: any) => {
     sameSite: 'Lax',
     secure: true,
   });
+  setCookie(c, 'last_dash_id', dashInfo.dash_id, {
+    path: '/', maxAge: 86400, sameSite: 'Lax', secure: true, httpOnly: true
+  });
+  deleteCookie(c, 'op_token_' + dashInfo.workspace_id, { path: '/', secure: true, sameSite: 'Lax' });
   if (dashInfo.device_id) {
     setCookie(c, 'last_dev_id', dashInfo.device_id, {
       path: '/',
@@ -90,27 +81,13 @@ const handleDashboardProxy = async (c: any) => {
       sameSite: 'Lax',
       secure: true,
     });
+  } else {
+    deleteCookie(c, 'last_dev_id', { path: '/', secure: true, sameSite: 'Lax' });
   }
 
   // 2. Авторизация оператора (извлечение и проброс токена)
   let token = c.req.query('token') || c.req.header('X-Operator-Token');
-  if (!token && dashInfo.dash_path && dashInfo.dash_path.includes('token=')) {
-    const match = dashInfo.dash_path.match(/[?&]token=([^&]+)/);
-    if (match) {
-      token = decodeURIComponent(match[1]);
-    }
-  }
-  if (!token) {
-    token = getCookie(c, 'op_token_' + dashInfo.workspace_id) || undefined;
-  }
-  if (token) {
-    setCookie(c, 'op_token_' + dashInfo.workspace_id, token, {
-      path: '/',
-      maxAge: 86400,
-      sameSite: 'Lax',
-      secure: true,
-    });
-  }
+  if (!token && dashInfo.dash_path) token = storedOperatorToken(dashInfo.dash_path);
 
   // 3. Вычисление целевого подпути (/operator, /operator/view, /operator/events и т.д.)
   const basePath = `/view/${org_slug}/${ws_slug}/${dash_id}`;
@@ -118,6 +95,14 @@ const handleDashboardProxy = async (c: any) => {
   if (!subPath || subPath === '/') {
     subPath = dashInfo.dash_path || '/operator';
   }
+  if (!subPath.startsWith('/') || subPath.startsWith('//')) {
+    return c.text('Некорректный путь дашборда', 502);
+  }
+  const dashboardTarget = new URL(subPath, 'https://tunnel.internal');
+  if (dashboardTarget.origin !== 'https://tunnel.internal') {
+    return c.text('Некорректный путь дашборда', 502);
+  }
+  subPath = dashboardTarget.pathname + dashboardTarget.search;
 
   const queryIdx = c.req.url.indexOf('?');
   if (queryIdx !== -1) {
@@ -148,19 +133,19 @@ const handleDashboardProxy = async (c: any) => {
           body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
         }));
         if (doResponse.status !== 503) {
-          return doResponse;
+          return proxyResponse(c, doResponse);
         }
       } catch (_) {}
     }
   }
 
   // 5. Fallback: поиск устройства с классическим URL туннеля (если задан)
-  const device = (await (c.env.DB.prepare(`
+  const device = await c.env.DB.prepare(`
     SELECT * FROM devices
     WHERE workspace_id = ? AND is_online = 1 AND tunnel_url IS NOT NULL AND tunnel_url != 'direct_ws'
     ORDER BY CASE WHEN role = 'primary' THEN 1 ELSE 2 END ASC, priority DESC
     LIMIT 1
-  `) as any).bind(dashInfo.workspace_id).first()) as Device | null;
+  `).bind(dashInfo.workspace_id).first<Device>();
 
   if (!device || !device.tunnel_url) {
     return c.html(`
@@ -187,8 +172,8 @@ const handleDashboardProxy = async (c: any) => {
     `, 503);
   }
 
-  const tunnelBase = device.tunnel_url.replace(/\/$/, '');
-  const targetUrl = new URL(subPath, tunnelBase);
+  const targetUrl = tunnelTarget(device.tunnel_url, subPath);
+  if (!targetUrl) return c.text('Некорректный адрес туннеля', 502);
   const forwardHeaders = buildCleanHeaders(c.req.raw.headers, targetUrl.host);
   if (token) {
     forwardHeaders.set('X-Operator-Token', token);
@@ -200,21 +185,22 @@ const handleDashboardProxy = async (c: any) => {
   try {
     const upgradeHeader = c.req.header('Upgrade');
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-      return await fetch(targetUrl.toString(), {
+      return proxyResponse(c, await fetch(targetUrl.toString(), {
         headers: forwardHeaders,
         // @ts-ignore
         cf: { websocketHandling: 'raw' }
-      });
+      }));
     }
 
-    return await fetch(new Request(targetUrl.toString(), {
+    return proxyResponse(c, await fetch(new Request(targetUrl.toString(), {
       method: c.req.method,
       headers: forwardHeaders,
       body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
       redirect: 'manual'
-    }));
-  } catch (err: any) {
-    return c.text('Tunnel network error: ' + (err?.message || err), 502);
+    })));
+  } catch (err) {
+    console.error('Dashboard tunnel request failed', err);
+    return c.text('Ошибка связи с туннелем', 502);
   }
 };
 
@@ -231,26 +217,34 @@ proxyRouter.all('/operator/*', async (c) => {
 
   let wsId: string | null = null;
   let devId: string | null = null;
+  let memberRole: string | null = null;
+  let dashboardPath: string | null = null;
   const referer = c.req.header('Referer');
   if (referer) {
     const match = referer.match(/\/view\/([^\/]+)\/([^\/]+)\/([^\/?#]+)/);
     if (match) {
       const [_, org_slug, ws_slug, dash_id] = match;
       const query = `
-        SELECT d.device_id, w.id as workspace_id
+        SELECT linked_device.id as device_id, w.id as workspace_id, d.slug as dash_path,
+               m.role as member_role
         FROM dashboards d
         JOIN workspaces w ON d.workspace_id = w.id
+        LEFT JOIN devices linked_device ON linked_device.id = d.device_id
+          AND linked_device.workspace_id = w.id
         JOIN organizations o ON w.org_id = o.id
         JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
         WHERE o.slug = ? AND w.slug = ? AND (d.id = ? OR d.slug LIKE ?)
         LIMIT 1
       `;
-      const found = (await (c.env.DB.prepare(query) as any)
+      const found = await c.env.DB.prepare(query)
         .bind(user.id, org_slug, ws_slug, dash_id, `%${dash_id}%`)
-        .first()) as { device_id?: string; workspace_id: string } | null;
+        .first<{ device_id?: string; workspace_id: string; dash_path: string;
+          member_role: string }>();
       if (found) {
         wsId = found.workspace_id;
         devId = found.device_id || null;
+        memberRole = found.member_role;
+        dashboardPath = found.dash_path;
       }
     }
   }
@@ -259,20 +253,37 @@ proxyRouter.all('/operator/*', async (c) => {
     const candidateWs = getCookie(c, 'last_ws_id');
     if (candidateWs) {
       const allowed = await c.env.DB.prepare(`
-        SELECT w.id FROM workspaces w
+        SELECT w.id, linked_device.id as device_id, m.role as member_role,
+               selected_dashboard.slug as dash_path
+        FROM workspaces w
         JOIN organization_members m ON m.org_id = w.org_id
+        LEFT JOIN devices linked_device ON linked_device.id = ?
+          AND linked_device.workspace_id = w.id
+        LEFT JOIN dashboards selected_dashboard ON selected_dashboard.id = ?
+          AND selected_dashboard.workspace_id = w.id
         WHERE w.id = ? AND m.user_id = ?
         LIMIT 1
-      `).bind(candidateWs, user.id).first();
+      `).bind(getCookie(c, 'last_dev_id') || '', getCookie(c, 'last_dash_id') || '',
+        candidateWs, user.id)
+        .first<{ id: string; device_id: string | null; member_role: string;
+          dash_path: string | null }>();
       if (allowed) {
         wsId = candidateWs;
-        devId = getCookie(c, 'last_dev_id') || null;
+        devId = allowed.device_id;
+        memberRole = allowed.member_role;
+        dashboardPath = allowed.dash_path;
       }
     }
   }
 
   if (!wsId) {
     return c.json({ error: 'No active workspace found for operator request', message: 'Рабочее пространство не определено или нет доступа' }, 404);
+  }
+
+  if (memberRole === 'viewer' &&
+      (!['GET', 'HEAD'].includes(c.req.method) ||
+        c.req.header('Upgrade')?.toLowerCase() === 'websocket')) {
+    return c.json({ error: 'forbidden', message: 'Недостаточно прав для управления дашбордом' }, 403);
   }
 
   let targetPath = c.req.path;
@@ -283,9 +294,8 @@ proxyRouter.all('/operator/*', async (c) => {
 
   // Проброс токена оператора
   let token = c.req.query('token') || c.req.header('X-Operator-Token');
-  if (!token && wsId) {
-    token = getCookie(c, 'op_token_' + wsId) || undefined;
-  }
+  if (!token && dashboardPath) token = storedOperatorToken(dashboardPath);
+  if (!token && wsId) token = getCookie(c, 'op_token_' + wsId) || undefined;
 
   // 1. Прямой защищенный канал через Durable Object
   const operatorTargets = [devId, wsId].filter(Boolean) as string[];
@@ -308,26 +318,28 @@ proxyRouter.all('/operator/*', async (c) => {
           body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
         }));
         if (doResponse.status !== 503) {
-          return doResponse;
+          return proxyResponse(c, doResponse);
         }
       } catch (_) {}
     }
   }
 
   // 2. Fallback: поиск устройства со статическим туннелем
-  const device = (await (c.env.DB.prepare(`
+  const device = await c.env.DB.prepare(`
     SELECT * FROM devices
     WHERE workspace_id = ? AND is_online = 1 AND tunnel_url IS NOT NULL AND tunnel_url != 'direct_ws'
     ORDER BY CASE WHEN role = 'primary' THEN 1 ELSE 2 END ASC, priority DESC
     LIMIT 1
-  `) as any).bind(wsId).first()) as Device | null;
+  `).bind(wsId).first<Device>();
 
   if (!device || !device.tunnel_url) {
     return c.json({ error: 'Host device is offline', message: 'Хост-программа не подключена к хабу' }, 503);
   }
 
-  const tunnelBase = device.tunnel_url.replace(/\/$/, '');
-  const targetUrl = new URL(targetPath, tunnelBase);
+  const targetUrl = tunnelTarget(device.tunnel_url, targetPath);
+  if (!targetUrl) {
+    return c.json({ error: 'tunnel_error', message: 'Некорректный адрес туннеля' }, 502);
+  }
   const forwardHeaders = buildCleanHeaders(c.req.raw.headers, targetUrl.host);
   if (token) {
     forwardHeaders.set('X-Operator-Token', token);
@@ -339,20 +351,21 @@ proxyRouter.all('/operator/*', async (c) => {
   try {
     const upgradeHeader = c.req.header('Upgrade');
     if (upgradeHeader && upgradeHeader.toLowerCase() === 'websocket') {
-      return await fetch(targetUrl.toString(), {
+      return proxyResponse(c, await fetch(targetUrl.toString(), {
         headers: forwardHeaders,
         // @ts-ignore
         cf: { websocketHandling: 'raw' }
-      });
+      }));
     }
 
-    return await fetch(new Request(targetUrl.toString(), {
+    return proxyResponse(c, await fetch(new Request(targetUrl.toString(), {
       method: c.req.method,
       headers: forwardHeaders,
       body: ['GET', 'HEAD'].includes(c.req.method) ? undefined : c.req.raw.body,
       redirect: 'manual',
-    }));
-  } catch (err: any) {
-    return c.json({ error: 'tunnel_error', message: 'Ошибка связи с туннелем: ' + (err?.message || err) }, 502);
+    })));
+  } catch (err) {
+    console.error('Operator tunnel request failed', err);
+    return c.json({ error: 'tunnel_error', message: 'Ошибка связи с туннелем' }, 502);
   }
 });

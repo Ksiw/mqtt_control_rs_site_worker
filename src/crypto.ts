@@ -62,10 +62,10 @@ export async function signHmacSha256(secret: string, data: string): Promise<stri
  * Генерирует криптографически стойкий случайный ключ устройства
  */
 export function generateDeviceKey(): { prefix: string; fullKey: string } {
-  const randomBytes = new Uint8Array(16);
+  const randomBytes = new Uint8Array(24);
   crypto.getRandomValues(randomBytes);
   const hex = Array.from(randomBytes).map(b => b.toString(16).padStart(2, '0')).join('');
-  const prefix = `mcrs_live_${hex.substring(0, 2)}`;
   const fullKey = `mcrs_live_${hex}`;
+  const prefix = fullKey.substring(0, 16);
   return { prefix, fullKey };
 }

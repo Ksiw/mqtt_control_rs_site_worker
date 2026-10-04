@@ -8,6 +8,35 @@ function prefixMatches(supplied: string, stored: string): boolean {
   return supplied.startsWith(stored) || stored.startsWith(supplied);
 }
 
+function safeLocalPath(path: string): boolean {
+  if (!path.startsWith('/') || path.startsWith('//')) return false;
+  try {
+    return new URL(path, 'https://tunnel.internal').origin === 'https://tunnel.internal';
+  } catch {
+    return false;
+  }
+}
+
+function validDashboard(value: unknown): value is { id: string; name?: string; path?: string } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const dash = value as Record<string, unknown>;
+  return typeof dash.id === 'string' && dash.id.length > 0 && dash.id.length <= 100 &&
+    (dash.name === undefined || (typeof dash.name === 'string' && dash.name.length <= 200)) &&
+    (dash.path === undefined || (typeof dash.path === 'string' &&
+      dash.path.length <= 2048 && (!dash.path || safeLocalPath(dash.path))));
+}
+
+function validTunnelUrl(value: string): boolean {
+  if (!value || value === 'direct_ws') return true;
+  try {
+    const url = new URL(value);
+    return (url.protocol === 'https:' || url.protocol === 'http:') &&
+      !url.username && !url.password && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
 async function authenticateSignedDevice(
   c: Context<{ Bindings: Env }>, body: string, missingStatus: 401 | 404 = 401
 ): Promise<{ device: Device; error?: never } | { device?: never; error: Response }> {
@@ -57,6 +86,19 @@ deviceRouter.post('/heartbeat', async (c) => {
     } catch (e) {
       return c.json({ status: 'error', message: 'Некорректный формат JSON' }, 400);
     }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload) ||
+        (payload.tunnel_url !== undefined && payload.tunnel_url !== null &&
+          (typeof payload.tunnel_url !== 'string' || payload.tunnel_url.length > 2048 ||
+            !validTunnelUrl(payload.tunnel_url))) ||
+        (payload.app_version !== undefined &&
+          (typeof payload.app_version !== 'string' || payload.app_version.length > 100)) ||
+        (payload.os !== undefined &&
+          (typeof payload.os !== 'string' || payload.os.length > 200)) ||
+        (payload.device_role !== undefined &&
+          payload.device_role !== 'primary' && payload.device_role !== 'standby') ||
+        (payload.dashboards !== undefined && !Array.isArray(payload.dashboards))) {
+      return c.json({ status: 'error', message: 'Некорректные данные устройства' }, 400);
+    }
 
     // 2. Обновляем статус устройства в базе данных D1
     const batchQueries: any[] = [
@@ -84,7 +126,10 @@ deviceRouter.post('/heartbeat', async (c) => {
       if (payload.dashboards.length > 500) {
         return c.json({ status: 'error', message: 'Слишком много дашбордов' }, 400);
       }
-      const validDashboards = payload.dashboards.filter(d => d && typeof d.id === 'string' && d.id.length > 0);
+      if (!payload.dashboards.every(validDashboard)) {
+        return c.json({ status: 'error', message: 'Некорректные данные дашбордов' }, 400);
+      }
+      const validDashboards = payload.dashboards;
       const activeIds = validDashboards.map(d => `${device.id}_${d.id}`);
       if (activeIds.length > 0) {
         const placeholders = activeIds.map(() => '?').join(',');
@@ -123,7 +168,7 @@ deviceRouter.post('/heartbeat', async (c) => {
     console.error('Ошибка в /api/v1/device/heartbeat:', err);
     return c.json({
       status: 'error',
-      message: `Внутренняя ошибка сервера: ${err?.message || err}`
+      message: 'Внутренняя ошибка сервера'
     }, 500);
   }
 });
@@ -150,7 +195,7 @@ deviceRouter.post('/unlink', async (c) => {
     console.error('Ошибка в /api/v1/device/unlink:', err);
     return c.json({
       status: 'error',
-      message: `Внутренняя ошибка сервера: ${err?.message || err}`
+      message: 'Внутренняя ошибка сервера'
     }, 500);
   }
 });
@@ -160,8 +205,11 @@ deviceRouter.post('/unlink', async (c) => {
  * GET /api/v1/device/tunnel-ws
  */
 deviceRouter.get('/tunnel-ws', async (c) => {
-  const prefix = c.req.header('X-Device-Prefix') || c.req.query('prefix');
-  const deviceKey = c.req.header('X-Device-Key') || c.req.query('key');
+  if (c.req.header('Upgrade')?.toLowerCase() !== 'websocket') {
+    return c.text('Expected WebSocket upgrade', 426);
+  }
+  const prefix = c.req.header('X-Device-Prefix');
+  const deviceKey = c.req.header('X-Device-Key');
   if (!prefix || !deviceKey) {
     return c.text('Не указаны обязательные параметры аутентификации (prefix и key)', 401);
   }

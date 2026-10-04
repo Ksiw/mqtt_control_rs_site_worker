@@ -121,14 +121,14 @@ export function renderCabinetModals(planPrices?: { month: number; year: number }
           <button onclick="closeProModal()" style="background:none; border:none; color:#64748b; font-size:18px; cursor:pointer;">✕</button>
         </div>
         <p style="font-size: 13px; color: #94a3b8; margin-bottom: 18px; line-height: 1.5; text-align: left;">
-          Тариф Pro расширяет возможности: до 3 хост-программ, до 50 дашбордов и до 15 пользователей.
+          Тариф Pro расширяет возможности: до 3 хост-программ и до 15 пользователей.
         </p>
 
         ${canTrial ? `
           <div style="background:linear-gradient(135deg, #1e1b4b, #312e81); border:1px solid #6366f1; border-radius:8px; padding:14px; margin-bottom:18px; text-align:left;">
             <div style="font-weight:600; color:#e0e7ff; font-size:14px; margin-bottom:4px;">🎁 Попробуйте бесплатно на 60 дней</div>
             <p style="font-size:12px; color:#c7d2fe; margin-bottom:12px; line-height:1.4;">
-              Вам доступен полный пробный тариф Pro на 60 дней (до 3 хостов, до 50 дашбордов, до 15 участников). Привязка карты не требуется.
+              Вам доступен полный пробный тариф Pro на 60 дней (до 3 хостов и до 15 пользователей). Привязка карты не требуется.
             </p>
             <button type="button" id="activateTrialModalBtn" onclick="activateTrial()" class="btn-primary" style="background:#6366f1; width:100%; padding:10px; font-weight:600;">
               ✨ Активировать 60 дней Pro бесплатно

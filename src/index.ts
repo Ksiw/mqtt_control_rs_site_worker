@@ -9,6 +9,7 @@ import { pairRouter } from './pairing';
 import { billingRouter } from './billing';
 import { adminRouter } from './admin';
 import { licenseApiRouter } from './license_api';
+import { wikiRouter } from './wiki';
 
 const app = new Hono<{ Bindings: Env }>();
 
@@ -20,6 +21,7 @@ app.route('/api/v1/pair', pairRouter);
 app.route('/api/v1/billing', billingRouter);
 app.route('/api/v1/admin', adminRouter);
 app.route('/api/v1', licenseApiRouter);
+app.route('/api/v1/wiki', wikiRouter);
 app.route('/', cabinetRouter);
 app.route('/', proxyRouter);
 
@@ -64,5 +66,9 @@ export default {
       DELETE FROM devices 
       WHERE last_heartbeat_at IS NULL AND created_at < ?
     `).bind(thirtyDaysAgo).run();
+
+    // Удаляем завершённые и истёкшие запросы привязки вместе с выданными ключами.
+    await env.DB.prepare('DELETE FROM device_pairings WHERE expires_at < ?')
+      .bind(now - 86400).run();
   }
 };

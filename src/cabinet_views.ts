@@ -6,7 +6,7 @@ import { escapeHtml, htmlJsArg } from './html';
 export { renderLoginHtml } from './login_view';
 
 function renderDashCard(d: any): string {
-  const dashUrl = `/view/${d.org_slug}/${d.ws_slug}/${d.id}${d.slug && d.slug.includes('?') ? '?' + d.slug.split('?')[1] : ''}`;
+  const dashUrl = `/view/${d.org_slug}/${d.ws_slug}/${d.id}`;
   const isOnline = d.is_online === 1;
   return `
     <div class="dash-card"${isOnline ? '' : ' style="opacity: 0.65;"'}>
@@ -202,7 +202,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
           <div style="background:linear-gradient(90deg, #1e1b4b 0%, #172554 100%); border:1px solid #6366f1; border-radius:10px; padding:16px 20px; margin-bottom:24px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:14px;">
             <div>
               <div style="font-weight:600; color:#e0e7ff; font-size:15px; margin-bottom:4px;">🎁 Доступен ознакомительный период Pro на 60 дней</div>
-              <div style="color:#94a3b8; font-size:13px;">Подключите до 3 хост-программ, создавайте до 50 дашбордов и добавьте до 15 пользователей без привязки карты.</div>
+              <div style="color:#94a3b8; font-size:13px;">Подключите до 3 хост-программ и добавьте до 15 пользователей без привязки карты.</div>
             </div>
             <button type="button" id="activateTrialBtn" onclick="activateTrial()" class="btn-primary" style="background:#6366f1; white-space:nowrap; padding:9px 18px; font-weight:600;">
               ✨ Активировать бесплатно
@@ -342,7 +342,7 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
 
       ${renderCabinetModals(planPrices, canTrial)}
 
-      ${renderCabinetScripts(currentWsId)}
+      ${renderCabinetScripts(currentWsId, currentOrg.id)}
       ${renderAdminScripts(Boolean(isSuperAdmin))}
     </body>
     </html>

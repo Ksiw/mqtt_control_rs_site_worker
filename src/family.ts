@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { Env, getEffectivePlanTier } from './types';
-import { getCurrentUser } from './cabinet';
+import { getCurrentUser } from './core/session';
 
 export const familyRouter = new Hono<{ Bindings: Env }>();
 
@@ -14,10 +14,14 @@ familyRouter.post('/invite', async (c) => {
     return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
   }
 
-  const { email, role } = await c.req.json() as { email?: string; role?: string };
-  const cleanEmail = email?.trim().toLowerCase();
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { email, role } = body as { email?: string; role?: string };
+  const cleanEmail = typeof email === 'string' ? email.trim().toLowerCase() : '';
 
-  if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail.length < 5) {
+  if (!cleanEmail || !cleanEmail.includes('@') || cleanEmail.length < 5 || cleanEmail.length > 254) {
     return c.json({ status: 'error', message: 'Укажите корректный адрес электронной почты' }, 400);
   }
 
@@ -85,12 +89,25 @@ familyRouter.post('/invite', async (c) => {
   ).bind(cleanEmail).first<{ id: string }>();
 
   const now = Math.floor(Date.now() / 1000);
+  const quotaCondition = `
+    (SELECT COUNT(*) FROM organization_members WHERE org_id = ?) +
+    (SELECT COUNT(*) FROM invites WHERE org_id = ?) < ?
+  `;
 
   if (registeredUser) {
-    await c.env.DB.prepare(`
+    const inserted = await c.env.DB.prepare(`
       INSERT INTO organization_members (org_id, user_id, role, created_at)
-      VALUES (?, ?, ?, ?)
-    `).bind(orgMember.org_id, registeredUser.id, role === 'viewer' ? 'viewer' : 'operator', now).run();
+      SELECT ?, ?, ?, ? WHERE ${quotaCondition}
+        AND EXISTS (SELECT 1 FROM organization_members
+          WHERE org_id = ? AND user_id = ? AND role IN ('owner', 'admin'))
+        AND NOT EXISTS (SELECT 1 FROM organization_members
+          WHERE org_id = ? AND user_id = ?)
+    `).bind(orgMember.org_id, registeredUser.id, role === 'viewer' ? 'viewer' : 'operator', now,
+      orgMember.org_id, orgMember.org_id, maxAccounts, orgMember.org_id, user.id,
+      orgMember.org_id, registeredUser.id).run();
+    if (inserted.meta.changes !== 1) {
+      return c.json({ status: 'error', message: 'Лимит пользователей или права доступа изменились' }, 409);
+    }
 
     return c.json({
       status: 'ok',
@@ -100,10 +117,19 @@ familyRouter.post('/invite', async (c) => {
 
   // Иначе сохраняем приглашение — при первом входе через Google он подключится автоматически
   const inviteId = `inv_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
-  await c.env.DB.prepare(`
+  const inserted = await c.env.DB.prepare(`
     INSERT INTO invites (id, org_id, email, role, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).bind(inviteId, orgMember.org_id, cleanEmail, role === 'viewer' ? 'viewer' : 'operator', now).run();
+    SELECT ?, ?, ?, ?, ? WHERE ${quotaCondition}
+      AND EXISTS (SELECT 1 FROM organization_members
+        WHERE org_id = ? AND user_id = ? AND role IN ('owner', 'admin'))
+      AND NOT EXISTS (SELECT 1 FROM invites
+        WHERE org_id = ? AND lower(email) = ?)
+  `).bind(inviteId, orgMember.org_id, cleanEmail, role === 'viewer' ? 'viewer' : 'operator', now,
+    orgMember.org_id, orgMember.org_id, maxAccounts, orgMember.org_id, user.id,
+    orgMember.org_id, cleanEmail).run();
+  if (inserted.meta.changes !== 1) {
+    return c.json({ status: 'error', message: 'Лимит пользователей или права доступа изменились' }, 409);
+  }
 
   return c.json({
     status: 'ok',
@@ -121,7 +147,16 @@ familyRouter.post('/remove', async (c) => {
     return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
   }
 
-  const { user_id, email } = await c.req.json() as { user_id?: string; email?: string };
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { user_id, email } = body as { user_id?: string; email?: string };
+  if ((user_id !== undefined && typeof user_id !== 'string') ||
+      (email !== undefined && typeof email !== 'string') ||
+      (!user_id && !email)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
 
   const orgMember = await c.env.DB.prepare(`
     SELECT o.id as org_id, o.owner_user_id, m.role

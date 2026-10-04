@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { Env, User, getEffectivePlanTier } from './types';
-import { createUserSession } from './auth';
+import { AccountIdentityConflictError, createUserSession } from './auth';
 
 export const licenseApiRouter = new Hono<{ Bindings: Env }>();
 
@@ -37,8 +37,10 @@ async function signLicense(
 }
 
 licenseApiRouter.post('/auth/google', async (c) => {
-  const { id_token } = await c.req.json<{ id_token?: string }>().catch(() => ({ id_token: undefined }));
-  if (!id_token || id_token.length > 8192) {
+  const body = await c.req.json().catch(() => null);
+  const id_token = body && typeof body === 'object' && !Array.isArray(body)
+    ? (body as { id_token?: unknown }).id_token : undefined;
+  if (typeof id_token !== 'string' || !id_token || id_token.length > 8192) {
     return c.json({ error: 'Invalid Google token' }, 400);
   }
 
@@ -60,9 +62,17 @@ licenseApiRouter.post('/auth/google', async (c) => {
     return c.json({ error: 'Google identity is not valid for this application' }, 401);
   }
 
-  const sessionToken = await createUserSession(c.env.DB, {
-    id: identity.sub, email: identity.email, name: identity.name, picture: identity.picture
-  });
+  let sessionToken: string;
+  try {
+    sessionToken = await createUserSession(c.env.DB, {
+      id: identity.sub, email: identity.email, name: identity.name, picture: identity.picture
+    });
+  } catch (error) {
+    if (error instanceof AccountIdentityConflictError) {
+      return c.json({ error: 'Email belongs to another Google account' }, 409);
+    }
+    throw error;
+  }
   return c.json({ session_token: sessionToken });
 });
 

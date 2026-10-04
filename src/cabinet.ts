@@ -1,52 +1,16 @@
 import { Hono, Context } from 'hono';
-import { getCookie } from 'hono/cookie';
 import { Env, User, Organization, Workspace, Device, getTierDeviceLimit, getEffectivePlanTier } from './types';
 import { renderLoginHtml } from './login_view';
 import { renderCabinetHtml } from './cabinet_views';
-import { isSuperAdmin, getPlanPrices } from './admin';
+import { getCurrentUser } from './core/session';
+import { isSuperAdmin } from './core/admin_access';
+import { getPlanPrices } from './core/pricing';
+import { generateDeviceKey, sha256Hex } from './crypto';
+
+export { getCurrentUser } from './core/session';
+export { generateDeviceKey, sha256Hex } from './crypto';
 
 export const cabinetRouter = new Hono<{ Bindings: Env }>();
-
-/**
- * Получение текущего пользователя по токену сессии из Cookies
- */
-export async function getCurrentUser(c: Context<{ Bindings: Env }>): Promise<User | null> {
-  const token = getCookie(c, 'session');
-  if (!token?.startsWith('sess_')) return null;
-
-  const now = Math.floor(Date.now() / 1000);
-  const session = await c.env.DB.prepare(`
-    SELECT u.* FROM user_sessions s
-    JOIN users u ON s.user_id = u.id
-    WHERE s.token = ? AND s.expires_at > ?
-  `).bind(token, now).first<User>();
-
-  return session || null;
-}
-
-/**
- * Генерация секретного ключа устройства
- */
-export function generateDeviceKey(): { prefix: string; fullKey: string } {
-  const randomBytes = new Uint8Array(24);
-  crypto.getRandomValues(randomBytes);
-  const keyBody = Array.from(randomBytes)
-    .map(b => b.toString(16).padStart(2, '0'))
-    .join('');
-  const fullKey = `mcrs_live_${keyBody}`;
-  const prefix = fullKey.substring(0, 16);
-  return { prefix, fullKey };
-}
-
-/**
- * Вычисление SHA-256 хеша для безопасного хранения ключей в D1
- */
-export async function sha256Hex(message: string): Promise<string> {
-  const msgBuffer = new TextEncoder().encode(message);
-  const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
-  const hashArray = Array.from(new Uint8Array(hashBuffer));
-  return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-}
 
 /**
  * Главный экран личного кабинета / диспетчерской
@@ -129,14 +93,15 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     workspaces = wsRes.results || [];
 
     if (workspaces.length > 0) {
-      const wsIds = workspaces.map(w => `'${w.id}'`).join(',');
+      const wsIds = workspaces.map(() => '?').join(',');
+      const workspaceIds = workspaces.map(w => w.id);
       const now = Math.floor(Date.now() / 1000);
       
       const devRes = await c.env.DB.prepare(
         `SELECT *, CASE WHEN is_online = 1 AND (? - COALESCE(last_heartbeat_at, 0)) <= 60 THEN 1 ELSE 0 END as is_online 
          FROM devices 
          WHERE workspace_id IN (${wsIds})`
-      ).bind(now).all<Device>();
+      ).bind(now, ...workspaceIds).all<Device>();
       devices = devRes.results || [];
 
       if (devices.length > 0) {
@@ -146,7 +111,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
            JOIN workspaces w ON d.workspace_id = w.id
            JOIN organizations o ON w.org_id = o.id
            WHERE d.workspace_id IN (${wsIds})`
-        ).all();
+        ).bind(...workspaceIds).all();
         dashboards = (dashRes.results || []).map((d: any) => {
           let devOnline = 0;
           if (d.device_id) {
@@ -160,16 +125,13 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
             is_online: devOnline
           };
         });
-      } else {
-        dashboards = [];
-        await c.env.DB.prepare(`DELETE FROM dashboards WHERE workspace_id IN (${wsIds})`).run();
       }
     }
 
     const paymentQuery = c.req.query('payment');
     let paymentNotification: string | undefined;
     if (paymentQuery === 'success') {
-      paymentNotification = '✓ Оплата успешно принята! Ваш тариф Pro активирован.';
+      paymentNotification = 'Вы вернулись со страницы оплаты. Статус платежа проверяется; текущий тариф указан ниже.';
     } else if (paymentQuery === 'cancel') {
       paymentNotification = 'Оплата была отменена.';
     }
@@ -186,7 +148,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
       maxDevices,
       maxMembers,
       isOwner,
-      isSuperAdmin: isSuperAdmin(user),
+      isSuperAdmin: isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID),
       isTrial,
       daysLeft,
       canTrial,
@@ -198,7 +160,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
   const paymentQuery = c.req.query('payment');
   let paymentNotification: string | undefined;
   if (paymentQuery === 'success') {
-    paymentNotification = '✓ Оплата успешно принята! Ваш тариф Pro активирован.';
+    paymentNotification = 'Вы вернулись со страницы оплаты. Статус платежа проверяется; текущий тариф указан ниже.';
   } else if (paymentQuery === 'cancel') {
     paymentNotification = 'Оплата была отменена.';
   }
@@ -215,7 +177,7 @@ export const handleCabinet = async (c: Context<{ Bindings: Env }>) => {
     maxDevices,
     maxMembers,
     isOwner: true,
-    isSuperAdmin: isSuperAdmin(user),
+    isSuperAdmin: isSuperAdmin(user, c.env.SUPERADMIN_GOOGLE_ID),
     canTrial: false,
     paymentNotification,
     planPrices
@@ -259,15 +221,20 @@ cabinetRouter.post('/api/v1/subscription/activate-trial', async (c) => {
   const now = Math.floor(Date.now() / 1000);
   const trialEnd = now + (60 * 86400);
 
-  await c.env.DB.prepare(`
+  const activated = await c.env.DB.prepare(`
     UPDATE subscriptions
     SET plan_tier = 'pro', status = 'trialing', max_devices = 3, max_dashboards = 50, trial_used = 1, current_period_end = ?
-    WHERE org_id = ?
-  `).bind(trialEnd, orgMember.org_id).run();
+    WHERE org_id = ? AND COALESCE(trial_used, 0) = 0
+      AND NOT (plan_tier IN ('pro', 'enterprise')
+        AND status IN ('active', 'trialing') AND current_period_end > ?)
+  `).bind(trialEnd, orgMember.org_id, now).run();
+  if (activated.meta.changes !== 1) {
+    return c.json({ status: 'error', message: 'Пробный период уже недоступен' }, 409);
+  }
 
   return c.json({
     status: 'ok',
-    message: 'Вам успешно активирован ознакомительный период Pro на 60 дней (до 3 хостов и до 50 дашбордов)!'
+    message: 'Вам успешно активирован ознакомительный период Pro на 60 дней (до 3 хостов и до 15 пользователей)!'
   });
 });
 
@@ -281,13 +248,19 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
     return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
   }
 
-  const { workspace_id, name, role } = await c.req.json() as {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { workspace_id, name, role } = body as {
     workspace_id: string;
     name: string;
     role?: 'primary' | 'standby';
   };
 
-  if (!workspace_id || !name) {
+  if (typeof workspace_id !== 'string' || !workspace_id || workspace_id.length > 100 ||
+      typeof name !== 'string' || !name.trim() || name.length > 200 ||
+      (role !== undefined && role !== 'primary' && role !== 'standby')) {
     return c.json({ status: 'error', message: 'Не указаны обязательные поля' }, 400);
   }
 
@@ -333,10 +306,21 @@ cabinetRouter.post('/api/v1/devices/create', async (c) => {
   const { prefix, fullKey } = generateDeviceKey();
   const keyHash = await sha256Hex(fullKey);
 
-  await c.env.DB.prepare(`
+  const inserted = await c.env.DB.prepare(`
     INSERT INTO devices (id, workspace_id, name, role, priority, key_hash, key_prefix, routing_mode, is_online, created_at)
-    VALUES (?, ?, ?, ?, 100, ?, ?, 'proxy', 0, ?)
-  `).bind(devId, workspace_id, name, role || 'primary', keyHash, prefix, now).run();
+    SELECT ?, ?, ?, ?, 100, ?, ?, 'proxy', 0, ?
+    WHERE EXISTS (
+      SELECT 1 FROM workspaces w
+      JOIN organization_members m ON m.org_id = w.org_id
+      WHERE w.id = ? AND w.org_id = ? AND m.user_id = ? AND m.role IN ('owner', 'admin')
+    )
+    AND (SELECT COUNT(*) FROM devices d
+         JOIN workspaces w ON w.id = d.workspace_id WHERE w.org_id = ?) < ?
+  `).bind(devId, workspace_id, name, role || 'primary', keyHash, prefix, now,
+    workspace_id, orgMember.org_id, user.id, orgMember.org_id, maxDevices).run();
+  if (inserted.meta.changes !== 1) {
+    return c.json({ status: 'error', message: 'Лимит хостов или права доступа изменились' }, 409);
+  }
 
   return c.json({
     status: 'ok',
@@ -355,8 +339,12 @@ cabinetRouter.post('/api/v1/devices/delete', async (c) => {
     return c.json({ status: 'error', message: 'Требуется авторизация' }, 401);
   }
 
-  const { device_id } = await c.req.json() as { device_id: string };
-  if (!device_id) {
+  const body = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
+  }
+  const { device_id } = body as { device_id: string };
+  if (typeof device_id !== 'string' || !device_id || device_id.length > 100) {
     return c.json({ status: 'error', message: 'Не указан идентификатор устройства' }, 400);
   }
 
@@ -376,15 +364,14 @@ cabinetRouter.post('/api/v1/devices/delete', async (c) => {
     return c.json({ status: 'error', message: 'Только владелец организации может удалять хосты' }, 403);
   }
 
-  await c.env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(device_id).run();
-  await c.env.DB.prepare('DELETE FROM dashboards WHERE device_id = ?').bind(device_id).run();
-
-  const remaining = await c.env.DB.prepare(
-    'SELECT COUNT(*) as count FROM devices WHERE workspace_id = ?'
-  ).bind(device.workspace_id).first<{ count: number }>();
-  if ((remaining?.count ?? 0) === 0) {
-    await c.env.DB.prepare('DELETE FROM dashboards WHERE workspace_id = ?').bind(device.workspace_id).run();
-  }
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM dashboards WHERE device_id = ?').bind(device_id),
+    c.env.DB.prepare('DELETE FROM devices WHERE id = ?').bind(device_id),
+    c.env.DB.prepare(`
+      DELETE FROM dashboards WHERE workspace_id = ?
+        AND NOT EXISTS (SELECT 1 FROM devices WHERE workspace_id = ?)
+    `).bind(device.workspace_id, device.workspace_id)
+  ]);
 
   return c.json({
     status: 'ok',
@@ -422,14 +409,15 @@ cabinetRouter.get('/api/v1/cabinet/state', async (c) => {
     return c.json({ status: 'ok', devices: [], dashboards: [] });
   }
 
-  const wsIds = wsList.map(w => `'${w.id}'`).join(',');
+  const wsIds = wsList.map(() => '?').join(',');
+  const workspaceIds = wsList.map(w => w.id);
   const now = Math.floor(Date.now() / 1000);
 
   const devRes = await c.env.DB.prepare(
     `SELECT id, name, role, CASE WHEN is_online = 1 AND (? - COALESCE(last_heartbeat_at, 0)) <= 60 THEN 1 ELSE 0 END as is_online, app_version 
      FROM devices 
      WHERE workspace_id IN (${wsIds})`
-  ).bind(now).all<any>();
+  ).bind(now, ...workspaceIds).all<any>();
   const devices = devRes.results || [];
 
   let dashboards: any[] = [];
@@ -445,8 +433,11 @@ cabinetRouter.get('/api/v1/cabinet/state', async (c) => {
        FROM dashboards d 
        JOIN workspaces w ON d.workspace_id = w.id
        WHERE d.workspace_id IN (${wsIds})`
-    ).bind(now, now).all<any>();
-    dashboards = dashRes.results || [];
+    ).bind(now, now, ...workspaceIds).all<any>();
+    dashboards = (dashRes.results || []).map(d => ({
+      ...d,
+      slug: typeof d.slug === 'string' ? d.slug.split(/[?#]/, 1)[0] : ''
+    }));
   }
 
   return c.json({

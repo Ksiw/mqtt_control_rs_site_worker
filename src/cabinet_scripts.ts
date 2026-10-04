@@ -1,8 +1,10 @@
-export function renderCabinetScripts(currentWsId: string): string {
+export function renderCabinetScripts(currentWsId: string, currentOrgId: string): string {
   const workspaceIdLiteral = JSON.stringify(currentWsId).replace(/</g, '\\u003c');
+  const organizationIdLiteral = JSON.stringify(currentOrgId).replace(/</g, '\\u003c');
   return `
     <script>
       let currentWorkspaceId = ${workspaceIdLiteral};
+      const currentOrganizationId = ${organizationIdLiteral};
       let createdDeviceKey = '';
       let activePairCode = '';
 
@@ -328,7 +330,7 @@ export function renderCabinetScripts(currentWsId: string): string {
           const res = await fetch('/api/v1/billing/create-invoice', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ duration })
+            body: JSON.stringify({ duration, org_id: currentOrganizationId })
           });
           const data = await res.json();
           if (data.status === 'ok' && data.invoice_url) {

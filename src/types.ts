@@ -9,7 +9,7 @@ export interface Env {
   GOOGLE_DESKTOP_CLIENT_ID?: string;
   LICENSE_SIGNING_KEY?: string;
   GOOGLE_CLIENT_SECRET?: string;
-  SESSION_SECRET?: string;
+  SUPERADMIN_GOOGLE_ID?: string;
   NOWPAYMENTS_API_KEY?: string;
   NOWPAYMENTS_IPN_SECRET?: string;
 }
