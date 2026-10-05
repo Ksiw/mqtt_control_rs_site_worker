@@ -15,7 +15,7 @@ export function buildCleanHeaders(incoming: Headers, targetHost: string): Header
         if (separator <= 0) return false;
         const name = part.slice(0, separator).trim();
         return name && !['session', 'oauth_state', 'oauth_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) &&
-          !name.startsWith('op_token_');
+          !name.startsWith('op_token_') && !name.startsWith('operator_dev_');
       });
       if (forwarded.length > 0) clean.set('Cookie', forwarded.join('; '));
       return;
@@ -49,7 +49,7 @@ function setCookieValues(headers: Headers): string[] {
 function isHubCookie(cookie: string): boolean {
   const name = cookie.slice(0, cookie.indexOf('=')).trim();
   return ['session', 'oauth_state', 'oauth_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) ||
-    name.startsWith('op_token_');
+    name.startsWith('op_token_') || name.startsWith('operator_dev_');
 }
 
 export function storedOperatorToken(path: string): string | undefined {
@@ -80,18 +80,20 @@ export function tunnelTarget(tunnelUrl: string, path: string): URL | null {
 export function proxyResponse(c: Context<{ Bindings: Env }>, upstream: Response): Response {
   const upstreamCookies = setCookieValues(upstream.headers);
   const hubCookies = setCookieValues(c.res.headers);
-  if (upstreamCookies.length === 0 && hubCookies.length === 0) return upstream;
-
   const headers = new Headers(upstream.headers);
-  headers.delete('Set-Cookie');
-  for (const cookie of upstreamCookies) {
-    if (!isHubCookie(cookie)) headers.append('Set-Cookie', cookie);
+
+  if (upstreamCookies.length > 0 || hubCookies.length > 0) {
+    headers.delete('Set-Cookie');
+    for (const cookie of upstreamCookies) {
+      if (!isHubCookie(cookie)) headers.append('Set-Cookie', cookie);
+    }
+    for (const cookie of hubCookies) headers.append('Set-Cookie', cookie);
   }
-  for (const cookie of hubCookies) headers.append('Set-Cookie', cookie);
+
   return new Response(upstream.body, {
     status: upstream.status,
     statusText: upstream.statusText,
     headers,
-    webSocket: upstream.webSocket
+    webSocket: upstream.webSocket,
   });
 }

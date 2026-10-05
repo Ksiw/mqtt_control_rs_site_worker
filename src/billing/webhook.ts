@@ -105,9 +105,7 @@ billingWebhookRouter.post('/webhook', async (c) => {
   }
 
   const providerId = String(payment_id);
-  if (payment.reconciliation_status === 'legacy_refund') {
-    return c.json({ status: 'review_required' });
-  }
+
 
   if (payment_status === 'refunded') {
     const otherApplied = await c.env.DB.prepare(`

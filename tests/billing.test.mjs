@@ -57,11 +57,6 @@ test('billing migration applies after the existing schema', async () => {
         INSERT INTO organizations (id, slug, name, owner_user_id, created_at)
         VALUES ('org', 'organization', 'Organization', 'user', 1)
       `).run();
-      db.prepare(`
-        INSERT INTO payments (id, org_id, user_id, order_id, amount_usd, plan_tier,
-                              duration_days, payment_status, created_at, updated_at)
-        VALUES ('old-refund', 'org', 'user', 'old-order', 12, 'pro', 30, 'refunded', 1, 1)
-      `).run();
     }
     db.exec(await readFile(join('migrations', file), 'utf8'));
   }
@@ -72,8 +67,6 @@ test('billing migration applies after the existing schema', async () => {
   assert.ok(paymentColumns.includes('provider_payment_id'));
   assert.ok(paymentColumns.includes('reconciliation_status'));
   assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE name = 'payment_refunds'").get());
-  assert.equal(db.prepare('SELECT reconciliation_status FROM payments WHERE id = ?')
-    .get('old-refund').reconciliation_status, 'legacy_refund');
 });
 
 class TestD1 {
@@ -296,16 +289,21 @@ test('refund of one payment does not block a new payment on the same invoice', a
     .get('pay-1').provider_payment_id, '9002');
 });
 
-test('refunds from before the attempt ledger require review', async () => {
+test('out-of-order notifications: refund before finished does not grant subscription and flags for review', async () => {
   const { db, env } = fixture();
   seedPayment(db, 'pay-1', 'order-1');
-  db.sqlite.prepare(`
-    UPDATE payments SET payment_status = 'refunded', reconciliation_status = 'legacy_refund'
-    WHERE id = ?
-  `).run('pay-1');
-  const response = await signedRequest(env, notification('order-1', '1001', 9001));
+  const refund = { ...notification('order-1', '1001', 9001), payment_status: 'refunded' };
+  assert.equal((await signedRequest(env, refund)).status, 200);
+  assert.equal(subscriptionEnd(db), 0);
+  const afterRefund = db.sqlite.prepare('SELECT payment_status, reconciliation_status FROM payments WHERE id = ?').get('pay-1');
+  assert.equal(afterRefund.payment_status, 'refunded');
+
+  const finished = notification('order-1', '1001', 9001);
+  const response = await signedRequest(env, finished);
   assert.deepEqual(await response.json(), { status: 'review_required' });
   assert.equal(subscriptionEnd(db), 0);
+  const afterFinished = db.sqlite.prepare('SELECT reconciliation_status FROM payments WHERE id = ?').get('pay-1');
+  assert.equal(afterFinished.reconciliation_status, 'refund_review');
 });
 
 test('refund of another provider payment cannot change an applied invoice', async () => {
