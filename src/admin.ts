@@ -226,7 +226,7 @@ adminRouter.get('/pricing', async (c) => {
 /**
  * Изменить цены подписки
  * POST /api/v1/admin/pricing
- * Body: { month: number, year: number }
+ * Body: { twoMonth: number, year: number }
  */
 adminRouter.post('/pricing', async (c) => {
   const user = await getCurrentUser(c);
@@ -238,14 +238,14 @@ adminRouter.post('/pricing', async (c) => {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
   }
-  const { month, year } = body as {
-    month?: number;
+  const { twoMonth, year } = body as {
+    twoMonth?: number;
     year?: number;
   };
 
-  if (typeof month !== 'number' || typeof year !== 'number' ||
-      !Number.isFinite(month) || !Number.isFinite(year) ||
-      month < 0.01 || year < 0.01 || month > 1000000 || year > 1000000) {
+  if (typeof twoMonth !== 'number' || typeof year !== 'number' ||
+      !Number.isFinite(twoMonth) || !Number.isFinite(year) ||
+      twoMonth < 0.01 || year < 0.01 || twoMonth > 1000000 || year > 1000000) {
     return c.json({ status: 'error', message: 'Некорректные цены' }, 400);
   }
 
@@ -253,9 +253,9 @@ adminRouter.post('/pricing', async (c) => {
 
   await c.env.DB.batch([
     c.env.DB.prepare(`
-      INSERT INTO system_settings (key, value, updated_at) VALUES ('price_month_usd', ?, ?)
+      INSERT INTO system_settings (key, value, updated_at) VALUES ('price_two_month_usd', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).bind(month.toFixed(2), now),
+    `).bind(twoMonth.toFixed(2), now),
     c.env.DB.prepare(`
       INSERT INTO system_settings (key, value, updated_at) VALUES ('price_year_usd', ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
@@ -264,7 +264,7 @@ adminRouter.post('/pricing', async (c) => {
 
   return c.json({
     status: 'ok',
-    message: `Цены успешно обновлены: $${month}/мес, $${year}/год`,
-    pricing: { month, year }
+    message: `Цены успешно обновлены: $${twoMonth}/2 мес, $${year}/год`,
+    pricing: { twoMonth, year }
   });
 });

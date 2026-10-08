@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { getCookie, setCookie, deleteCookie } from 'hono/cookie';
 import { Env, User } from './types';
+import { safeAuthReturn } from './core/auth_return';
 
 export const authRouter = new Hono<{ Bindings: Env }>();
 
@@ -29,10 +30,8 @@ authRouter.get('/google', async (c) => {
     sameSite: 'Lax',
     maxAge: 900
   });
-  const requestedReturn = c.req.query('return') || '';
-  const returnTo = /^\/(?:ru|en)\/wiki(?:#article=[a-zA-Z0-9_-]{1,100})?$/.test(requestedReturn)
-    ? requestedReturn
-    : '/cabinet';
+  const requestedReturn = c.req.query('return') || getCookie(c, 'dashboard_return') || '';
+  const returnTo = safeAuthReturn(requestedReturn) || '/cabinet';
   setCookie(c, 'oauth_return', returnTo, {
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 900
   });
@@ -125,7 +124,8 @@ authRouter.get('/callback', async (c) => {
   deleteCookie(c, 'oauth_state');
   const returnTo = getCookie(c, 'oauth_return') || '/cabinet';
   deleteCookie(c, 'oauth_return');
-  return c.redirect(/^\/(?:ru|en)\/wiki(?:#article=[a-zA-Z0-9_-]{1,100})?$/.test(returnTo) ? returnTo : '/cabinet');
+  deleteCookie(c, 'dashboard_return');
+  return c.redirect(safeAuthReturn(returnTo) || '/cabinet');
 });
 
 export class AccountIdentityConflictError extends Error {}

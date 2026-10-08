@@ -319,7 +319,7 @@ export function renderCabinetScripts(currentWsId: string, currentOrgId: string):
         if (errDiv) errDiv.style.display = 'none';
 
         const periodInput = document.querySelector('input[name="pro_period"]:checked');
-        const duration = periodInput ? periodInput.value : 'month';
+        const duration = periodInput ? periodInput.value : 'two_months';
 
         if (btn) {
           btn.disabled = true;

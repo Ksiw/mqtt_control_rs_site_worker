@@ -1,14 +1,12 @@
 import { Context, Hono } from 'hono';
-import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import { getCookie, setCookie } from 'hono/cookie';
 import { Env, Device } from './types';
 import { buildCleanHeaders, storedOperatorToken, tunnelTarget, proxyResponse } from './proxy/shared';
 import { selectOperatorDevice } from './proxy/operator_device';
 import { getCurrentUser } from './core/session';
-import { renderOperatorDashboardPage, renderOperatorUnavailablePage } from './operator/view';
-import { OPERATOR_JS } from './operator/scripts';
-import { OPERATOR_CSS } from './operator/styles';
-import { OPERATOR_CSS_PATH, OPERATOR_JS_PATH } from './operator/assets';
-import { preferredOperatorLanguage } from './operator/language';
+import { dashboardSession, isPanelOrigin, issueDashboardTicket, PANEL_ORIGIN } from './operator/access';
+import { panelRouter } from './operator/panel';
+import { safeAuthReturn } from './core/auth_return';
 
 export const proxyRouter = new Hono<{ Bindings: Env }>();
 
@@ -20,7 +18,8 @@ const ALLOWED_OPERATOR_PATHS: Record<string, string[]> = {
   '/operator/logout': ['POST'],
 };
 
-function sanitizeOperatorResponse(c: Context<{ Bindings: Env }>, upstream: Response): Response {
+function sanitizeOperatorResponse(c: Context<{ Bindings: Env }>, upstream: Response,
+  asset = false): Response {
   const contentType = (upstream.headers.get('content-type') || '').toLowerCase();
   const dangerousTypes = [
     'text/html',
@@ -32,7 +31,9 @@ function sanitizeOperatorResponse(c: Context<{ Bindings: Env }>, upstream: Respo
     'text/javascript',
     'application/ecmascript',
   ];
-  if (dangerousTypes.some((type) => contentType.includes(type))) {
+  const expectedAsset = c.req.path.endsWith('.js') ? 'application/javascript' : 'text/css';
+  if ((asset && !contentType.startsWith(expectedAsset)) ||
+      (!asset && dangerousTypes.some((type) => contentType.includes(type)))) {
     console.error(`Blocked dangerous device content-type: ${contentType}`);
     return c.json({
       error: 'invalid_device_content_type',
@@ -41,7 +42,7 @@ function sanitizeOperatorResponse(c: Context<{ Bindings: Env }>, upstream: Respo
   }
   const res = proxyResponse(c, upstream);
   res.headers.set('X-Content-Type-Options', 'nosniff');
-  res.headers.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; sandbox");
+  if (!asset) res.headers.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; sandbox");
   return res;
 }
 
@@ -57,16 +58,12 @@ async function dashboardDevice(
   return pinned?.id;
 }
 
-function dashboardPageResponse(c: Context<{ Bindings: Env }>, html: string, status: 200 | 503): Response {
-  return proxyResponse(c, new Response(html, {
-    status,
-    headers: {
-      'Content-Type': 'text/html; charset=utf-8',
-      'Cache-Control': 'no-store',
-      'X-Content-Type-Options': 'nosniff',
-      'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'",
-    },
-  }));
+function rememberDashboardReturn(c: Context<{ Bindings: Env }>): Response {
+  const path = new URL(c.req.url).pathname;
+  if (safeAuthReturn(path)) setCookie(c, 'dashboard_return', path, {
+    path: '/', maxAge: 900, httpOnly: true, secure: true, sameSite: 'Lax',
+  });
+  return c.redirect('/cabinet');
 }
 
 const handleDashboardPage = async (c: Context<{ Bindings: Env }>) => {
@@ -75,9 +72,7 @@ const handleDashboardPage = async (c: Context<{ Bindings: Env }>) => {
   }
 
   const user = await getCurrentUser(c);
-  if (!user) {
-    return c.redirect('/cabinet');
-  }
+  if (!user) return rememberDashboardReturn(c);
 
   const { org_slug, ws_slug, dash_id } = c.req.param();
 
@@ -138,95 +133,47 @@ const handleDashboardPage = async (c: Context<{ Bindings: Env }>) => {
     }
   }
 
-  const queryLang = c.req.query('lang');
-  const cookieLang = getCookie(c, 'lang');
-  let lang: 'ru' | 'en' = 'ru';
-  if (queryLang === 'en' || queryLang === 'ru') {
-    lang = queryLang;
-    setCookie(c, 'lang', lang, { path: '/', maxAge: 31536000, sameSite: 'Lax', secure: true });
-  } else if (cookieLang === 'en' || cookieLang === 'ru') {
-    lang = cookieLang;
-  } else {
-    lang = preferredOperatorLanguage(c.req.header('Accept-Language'));
-  }
-
   const selectedDevice = await selectOperatorDevice(
     c.env, dashInfo.workspace_id, dashInfo.device_id || null,
   );
   if (!selectedDevice) {
-    return dashboardPageResponse(c, renderOperatorUnavailablePage(lang), 503);
+    return c.text('Хост-программа не подключена к хабу', 503);
   }
-
-  // Запоминаем устройство именно этого дашборда для всех запросов страницы.
-  setCookie(c, 'last_ws_id', dashInfo.workspace_id, {
-    path: '/', maxAge: 86400, sameSite: 'Lax', secure: true,
-  });
-  setCookie(c, 'last_dash_id', dashInfo.dash_id, {
-    path: '/', maxAge: 86400, sameSite: 'Lax', secure: true, httpOnly: true,
-  });
-  deleteCookie(c, 'op_token_' + dashInfo.workspace_id, { path: '/', secure: true, sameSite: 'Lax' });
-  setCookie(c, 'last_dev_id', selectedDevice.id, {
-    path: '/', maxAge: 86400, sameSite: 'Lax', secure: true, httpOnly: true,
-  });
-  setCookie(c, 'operator_dev_' + dashInfo.dash_id, selectedDevice.id, {
-    path: '/operator', maxAge: 86400, sameSite: 'Lax', secure: true, httpOnly: true,
-  });
-
-  const html = renderOperatorDashboardPage({
-    title: dashInfo.dash_name || undefined,
-    enterpriseMode: selectedDevice.enterpriseMode,
-    dashboardId: dashInfo.dash_id,
-    lang,
-  });
-
-  return dashboardPageResponse(c, html, 200);
+  const ticket = await issueDashboardTicket(c, user.id, dashInfo.dash_id);
+  const response = c.redirect(`${PANEL_ORIGIN}/panel/open?ticket=${ticket}`, 302);
+  response.headers.set('Cache-Control', 'no-store');
+  response.headers.set('Referrer-Policy', 'no-referrer');
+  return response;
 };
 
-proxyRouter.get(OPERATOR_JS_PATH, () => {
-  return new Response(OPERATOR_JS, {
-    headers: {
-      'Content-Type': 'application/javascript; charset=utf-8',
-      'Cache-Control': 'public, max-age=31536000, immutable',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  });
+proxyRouter.get('/view/device/:prefix/:tab_id', async c => {
+  const user = await getCurrentUser(c);
+  if (!user) return rememberDashboardReturn(c);
+  const { prefix, tab_id } = c.req.param();
+  if (!/^mcrs_live_[a-f0-9]{6}$/.test(prefix) || !/^\d+$/.test(tab_id)) return c.notFound();
+  const result = await c.env.DB.prepare(`
+    SELECT d.id, o.slug as org_slug, w.slug as ws_slug
+    FROM devices dev
+    JOIN dashboards d ON d.device_id = dev.id AND d.id = dev.id || '_tab_' || ?
+    JOIN workspaces w ON w.id = dev.workspace_id
+    JOIN organizations o ON o.id = w.org_id
+    JOIN organization_members m ON m.org_id = o.id AND m.user_id = ?
+    WHERE dev.key_prefix = ? LIMIT 2
+  `).bind(tab_id, user.id, prefix).all<{
+    id: string; org_slug: string; ws_slug: string;
+  }>();
+  if (!result.results?.length) return c.notFound();
+  if (result.results.length > 1) return c.text('Неоднозначная ссылка на дашборд', 409);
+  const dashboard = result.results[0];
+  return c.redirect(`/view/${encodeURIComponent(dashboard.org_slug)}/${encodeURIComponent(dashboard.ws_slug)}/${encodeURIComponent(dashboard.id)}`);
 });
-
-proxyRouter.get(OPERATOR_CSS_PATH, () => {
-  return new Response(OPERATOR_CSS, {
-    headers: {
-      'Content-Type': 'text/css; charset=utf-8',
-      'Cache-Control': 'public, max-age=31536000, immutable',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  });
-});
-
-proxyRouter.get('/operator-static/operator.js', () => {
-  return new Response(OPERATOR_JS, {
-    headers: {
-      'Content-Type': 'application/javascript; charset=utf-8',
-      'Cache-Control': 'public, max-age=3600',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  });
-});
-
-proxyRouter.get('/operator-static/operator.css', () => {
-  return new Response(OPERATOR_CSS, {
-    headers: {
-      'Content-Type': 'text/css; charset=utf-8',
-      'Cache-Control': 'public, max-age=3600',
-      'X-Content-Type-Options': 'nosniff',
-    },
-  });
-});
-
 proxyRouter.get('/view/:org_slug/:ws_slug/:dash_id', handleDashboardPage);
+proxyRouter.route('/panel', panelRouter);
 
 // Прямая поддержка строго разрешённых подзапросов операторского интерфейса
 proxyRouter.all('/operator/*', async (c) => {
-  const allowedMethods = ALLOWED_OPERATOR_PATHS[c.req.path];
+  const asset = /^\/operator\/assets\/[a-f0-9]{16}\.(?:js|css)$/.test(c.req.path);
+  const allowedMethods = asset ? ['GET', 'HEAD'] : ALLOWED_OPERATOR_PATHS[c.req.path];
   if (!allowedMethods) {
     return c.json({ error: 'not_found', message: 'Маршрут не найден' }, 404);
   }
@@ -234,7 +181,19 @@ proxyRouter.all('/operator/*', async (c) => {
     return c.json({ error: 'method_not_allowed', message: 'Метод не поддерживается' }, 405);
   }
 
-  const user = await getCurrentUser(c);
+  const panelReferer = c.req.header('Referer');
+  let refererPanelId = '';
+  if (isPanelOrigin(c) && panelReferer) {
+    try {
+      const parsed = new URL(panelReferer);
+      if (parsed.origin === PANEL_ORIGIN) {
+        refererPanelId = parsed.pathname.match(/^\/panel\/([a-zA-Z0-9_-]+)\//)?.[1] || '';
+      }
+    } catch {}
+  }
+  const requestedPanelId = c.req.query('dash_id') || refererPanelId;
+  const panel = isPanelOrigin(c) ? await dashboardSession(c, requestedPanelId) : null;
+  const user = panel ? { id: panel.userId } : isPanelOrigin(c) ? null : await getCurrentUser(c);
   if (!user) {
     return c.json({ error: 'unauthorized', message: 'Требуется авторизация в аккаунте' }, 401);
   }
@@ -243,7 +202,7 @@ proxyRouter.all('/operator/*', async (c) => {
   let devId: string | null | undefined = null;
   let memberRole: string | null = null;
   let dashboardPath: string | null = null;
-  const requestedDashboardId = c.req.query('dash_id');
+  const requestedDashboardId = panel?.dashboardId || c.req.query('dash_id');
   if (requestedDashboardId) {
     const found = await c.env.DB.prepare(`
       SELECT d.id as dash_id, linked_device.id as device_id,
@@ -264,7 +223,7 @@ proxyRouter.all('/operator/*', async (c) => {
     dashboardPath = found.dash_path;
   }
   const referer = c.req.header('Referer');
-  if (!wsId && referer) {
+  if (!panel && !wsId && referer) {
     const match = referer.match(/\/view\/([^\/]+)\/([^\/]+)\/([^\/?#]+)/);
     if (match) {
       const [_, org_slug, ws_slug, dash_id] = match;
@@ -294,7 +253,7 @@ proxyRouter.all('/operator/*', async (c) => {
     }
   }
 
-  if (!wsId) {
+  if (!panel && !wsId) {
     const candidateWs = getCookie(c, 'last_ws_id');
     if (candidateWs) {
       const allowed = await c.env.DB.prepare(`
@@ -371,9 +330,32 @@ proxyRouter.all('/operator/*', async (c) => {
           body: reqBody,
         }));
         if (doResponse.status !== 503) {
-          return sanitizeOperatorResponse(c, doResponse);
+          return sanitizeOperatorResponse(c, doResponse, asset);
         }
       } catch (_) {}
+    }
+  }
+
+  if (panel && c.env.TUNNEL_DO && wsId && devId) {
+    const replacement = await selectOperatorDevice(c.env, wsId, devId);
+    if (replacement && replacement.id !== devId) {
+      devId = replacement.id;
+      setCookie(c, 'operator_dev_' + panel.dashboardId, devId, {
+        path: '/', maxAge: 86400, httpOnly: true, secure: true, sameSite: 'Lax',
+      });
+      if (c.env.TUNNEL_DO) {
+        try {
+          const stub = c.env.TUNNEL_DO.get(c.env.TUNNEL_DO.idFromName(devId));
+          const url = new URL(targetPath, 'https://tunnel.internal');
+          if (token && !url.searchParams.has('token')) url.searchParams.set('token', token);
+          const headers = buildCleanHeaders(c.req.raw.headers, 'tunnel.internal');
+          if (token) headers.set('X-Operator-Token', token);
+          const response = await stub.fetch(new Request(url, {
+            method: c.req.method, headers, body: reqBody,
+          }));
+          if (response.status !== 503) return sanitizeOperatorResponse(c, response, asset);
+        } catch {}
+      }
     }
   }
 
@@ -410,7 +392,7 @@ proxyRouter.all('/operator/*', async (c) => {
         headers: forwardHeaders,
         // @ts-ignore
         cf: { websocketHandling: 'raw' }
-      }));
+      }), asset);
     }
 
     return sanitizeOperatorResponse(c, await fetch(new Request(targetUrl.toString(), {
@@ -418,7 +400,7 @@ proxyRouter.all('/operator/*', async (c) => {
       headers: forwardHeaders,
       body: reqBody,
       redirect: 'manual',
-    })));
+    })), asset);
   } catch (err) {
     console.error('Operator tunnel request failed', err);
     return c.json({ error: 'tunnel_error', message: 'Ошибка связи с туннелем' }, 502);

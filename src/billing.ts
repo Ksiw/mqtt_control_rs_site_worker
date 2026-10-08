@@ -33,15 +33,15 @@ billingRouter.post('/create-invoice', async (c) => {
     return c.json({ status: 'error', message: 'Некорректный запрос' }, 400);
   }
   const { duration, org_id } = body as {
-    duration?: 'month' | 'year';
+    duration?: 'two_months' | 'year';
     org_id?: string;
   };
-  if ((duration !== 'month' && duration !== 'year') ||
+  if ((duration !== 'two_months' && duration !== 'year') ||
       (org_id !== undefined && typeof org_id !== 'string')) {
     return c.json({ status: 'error', message: 'Некорректный период подписки' }, 400);
   }
 
-  let prices: { month: number; year: number };
+  let prices: { twoMonth: number; year: number };
   try {
     prices = await getPlanPrices(c.env.DB, true);
   } catch (error) {
@@ -49,11 +49,11 @@ billingRouter.post('/create-invoice', async (c) => {
     return c.json({ status: 'error', message: 'Не удалось проверить стоимость подписки' }, 503);
   }
   const isYear = duration === 'year';
-  const amountUsd = isYear ? prices.year : prices.month;
-  const durationDays = isYear ? 365 : 30;
+  const amountUsd = isYear ? prices.year : prices.twoMonth;
+  const durationDays = isYear ? 365 : 60;
   const planDescription = isYear
     ? `MQTT Control RS Pro (1 год, $${amountUsd})`
-    : `MQTT Control RS Pro (1 месяц, $${amountUsd})`;
+    : `MQTT Control RS Pro (2 месяца, $${amountUsd})`;
 
   // Находим организацию пользователя (требуются права владельца или админа)
   const orgMembers = await c.env.DB.prepare(`

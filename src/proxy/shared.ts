@@ -14,8 +14,9 @@ export function buildCleanHeaders(incoming: Headers, targetHost: string): Header
         const separator = part.indexOf('=');
         if (separator <= 0) return false;
         const name = part.slice(0, separator).trim();
-        return name && !['session', 'oauth_state', 'oauth_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) &&
-          !name.startsWith('op_token_') && !name.startsWith('operator_dev_');
+        return name && !['session', 'oauth_state', 'oauth_return', 'dashboard_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) &&
+          !name.startsWith('op_token_') && !name.startsWith('operator_dev_') &&
+          !name.startsWith('dashboard_panel_');
       });
       if (forwarded.length > 0) clean.set('Cookie', forwarded.join('; '));
       return;
@@ -48,8 +49,9 @@ function setCookieValues(headers: Headers): string[] {
 
 function isHubCookie(cookie: string): boolean {
   const name = cookie.slice(0, cookie.indexOf('=')).trim();
-  return ['session', 'oauth_state', 'oauth_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) ||
-    name.startsWith('op_token_') || name.startsWith('operator_dev_');
+  return ['session', 'oauth_state', 'oauth_return', 'dashboard_return', 'last_ws_id', 'last_dev_id', 'last_dash_id'].includes(name) ||
+    name.startsWith('op_token_') || name.startsWith('operator_dev_') ||
+    name.startsWith('dashboard_panel_');
 }
 
 export function storedOperatorToken(path: string): string | undefined {

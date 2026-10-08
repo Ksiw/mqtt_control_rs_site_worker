@@ -51,7 +51,7 @@ export function addCalendarYears(fromUnixSeconds: number, years: number): number
 export function calculateNextPeriodEnd(
   currentPeriodEnd: number | undefined | null,
   planTier: string | undefined | null,
-  isYear: boolean,
+  months: 1 | 2 | 12,
   nowSeconds: number,
   billingAnchorDay?: number | null
 ): number {
@@ -60,7 +60,5 @@ export function calculateNextPeriodEnd(
   const anchorDay = hasActivePro && billingAnchorDay && billingAnchorDay >= 1 && billingAnchorDay <= 31
     ? billingAnchorDay : new Date(baseTime * 1000).getUTCDate();
 
-  return isYear
-    ? addCalendarMonthsOnDay(baseTime, 12, anchorDay)
-    : addCalendarMonthsOnDay(baseTime, 1, anchorDay);
+  return addCalendarMonthsOnDay(baseTime, months, anchorDay);
 }

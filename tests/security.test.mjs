@@ -89,7 +89,7 @@ test('dashboard and operator routes keep the operator token on the server', asyn
   const forwardedTokens = [];
   const env = {
     DB: { prepare(sql) {
-      return { bind() { return { all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
+      return { bind() { return { run: async () => ({}), all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
         ? [{ id: 'dev-1', tunnel_url: null, is_online: 1 }] : [] }),
         first: async () => sql.includes('FROM user_sessions s')
         ? { id: 'user-1' }
@@ -115,12 +115,10 @@ test('dashboard and operator routes keep the operator token on the server', asyn
   const response = await proxyRouter.request('https://site.test/view/org/ws/dash-1', {
     headers: { Cookie: 'session=sess_test' }
   }, env);
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 302);
   const cookies = response.headers.getSetCookie();
   assert.ok(cookies.every(cookie => !cookie.includes('private-token')));
-  assert.ok(cookies.some(cookie => cookie.startsWith('last_dash_id=dash-1') && cookie.includes('HttpOnly')));
-  assert.ok(cookies.some(cookie => cookie.startsWith('last_ws_id=ws-1')));
-  assert.ok(cookies.some(cookie => cookie.startsWith('last_dev_id=dev-1;')));
+  assert.ok(response.headers.get('Location').includes('/panel/open?ticket='));
   assert.ok(cookies.every(cookie => !cookie.startsWith('session=forged')));
 
   assert.deepEqual(forwardedTokens, []);
@@ -141,7 +139,7 @@ test('dashboard and operator routes keep the operator token on the server', asyn
   const fragmentResponse = await proxyRouter.request('https://site.test/view/org/ws/dash-1', {
     headers: { Cookie: 'session=sess_test' }
   }, env);
-  assert.equal(fragmentResponse.status, 200);
+  assert.equal(fragmentResponse.status, 302);
   assert.ok(fragmentResponse.headers.getSetCookie().every(cookie =>
     !cookie.includes('fragment-token')));
   const operatorFragment = await proxyRouter.request('https://site.test/operator/view', {
@@ -161,7 +159,7 @@ test('dashboard and operator routes keep the operator token on the server', asyn
 test('proxy blocks device HTML/SVG execution and unknown operator subpaths', async () => {
   const env = {
     DB: { prepare(sql) {
-      return { bind() { return { all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
+      return { bind() { return { run: async () => ({}), all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
         ? [{ id: 'dev-1', tunnel_url: null, is_online: 1 }] : [] }),
         first: async () => sql.includes('FROM user_sessions s')
         ? { id: 'user-1' }
@@ -201,10 +199,8 @@ test('proxy blocks device HTML/SVG execution and unknown operator subpaths', asy
   const pageResponse = await proxyRouter.request('https://site.test/view/org/ws/dash-1', {
     headers: { Cookie: 'session=sess_test' }
   }, env);
-  assert.equal(pageResponse.status, 200);
-  assert.equal(pageResponse.headers.get('Content-Type'), 'text/html; charset=utf-8');
-  assert.ok(pageResponse.headers.get('Content-Security-Policy').includes("default-src 'self'"));
-  assert.equal(pageResponse.headers.get('X-Content-Type-Options'), 'nosniff');
+  assert.equal(pageResponse.status, 302);
+  assert.ok(pageResponse.headers.get('Location').includes('/panel/open?ticket='));
 });
 
 
@@ -530,7 +526,7 @@ test('wiki comments require an account, enforce same-origin, and only allow dele
   assert.deepEqual(deleteQuery.params.slice(-1), ['usr_member']);
 });
 
-test('Google login returns to the wiki only for an allowed local path', async () => {
+test('Google login returns to an allowed wiki or dashboard path', async () => {
   const request = (returnTo) => authRouter.request(
     `https://site.test/google?return=${encodeURIComponent(returnTo)}`,
     { method: 'GET' },
@@ -539,6 +535,8 @@ test('Google login returns to the wiki only for an allowed local path', async ()
   const accepted = await request('/en/wiki#article=brokers');
   assert.equal(accepted.status, 302);
   assert.ok(accepted.headers.get('set-cookie').includes('oauth_return=%2Fen%2Fwiki%23article%3Dbrokers'));
+  const dashboard = await request('/view/device/mcrs_live_abcdef/7');
+  assert.ok(dashboard.headers.get('set-cookie').includes('oauth_return=%2Fview%2Fdevice%2Fmcrs_live_abcdef%2F7'));
   const rejected = await request('https://attacker.example/');
   assert.equal(rejected.status, 302);
   assert.ok(rejected.headers.get('set-cookie').includes('oauth_return=%2Fcabinet'));
@@ -596,7 +594,7 @@ test('browser Google login rejects an unverified email address', async () => {
   }
 });
 
-test('device heartbeat stores malicious dashboard title, proxy view escapes it and CSP blocks inline execution', async () => {
+test('device heartbeat stores dashboard title but cabinet handoff does not render it', async () => {
   const key = 'mcrs_live_0123456789abcdef0123456789abcdef';
   const device = {
     id: 'dev_test',
@@ -639,6 +637,7 @@ test('device heartbeat stores malicious dashboard title, proxy view escapes it a
         return {
           bind(...params) {
             return {
+              run: async () => ({}),
               all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
                 ? [{ id: device.id, tunnel_url: null, is_online: 1 }] : [] }),
               first: async () => {
@@ -671,29 +670,8 @@ test('device heartbeat stores malicious dashboard title, proxy view escapes it a
     headers: { Cookie: 'session=sess_test' }
   }, viewEnv);
 
-  assert.equal(pageResponse.status, 200);
-  const html = await pageResponse.text();
-
-  // MUST NOT contain unescaped </script> anywhere
-  assert.ok(!html.includes('</script><script>globalThis.pwned=1</script>'));
-  // Title in <title> tag must be HTML-escaped
-  assert.ok(html.includes('&lt;/script&gt;&lt;script&gt;globalThis.pwned=1&lt;/script&gt;'));
-  // Title in JSON config must have < and > escaped as \u003c and \u003e
-  assert.ok(html.includes('\\u003c/script\\u003e\\u003cscript\\u003eglobalThis.pwned=1\\u003c/script\\u003e'));
-  // Config is inside application/json script block
-  assert.ok(html.includes('<script type="application/json" id="operatorConfig">'));
-  // JS is loaded from static external script with versioned content hash, NOT inline
-  assert.ok(/<script src="\/operator-static\/operator\.[a-f0-9]+\.js"><\/script>/.test(html));
-  assert.ok(/<link rel="stylesheet" href="\/operator-static\/operator\.[a-f0-9]+\.css">/.test(html));
-  assert.ok(!html.includes('<script>'));
-
-  // CSP header verification
-  const csp = pageResponse.headers.get('Content-Security-Policy');
-  assert.ok(csp, 'CSP header must be present');
-  const scriptSrcMatch = csp.match(/script-src\s+([^;]+)/);
-  assert.ok(scriptSrcMatch, 'script-src directive must be present');
-  assert.ok(!scriptSrcMatch[1].includes("'unsafe-inline'"), 'script-src must strictly forbid unsafe-inline');
-  assert.ok(scriptSrcMatch[1].includes("'self'"), 'script-src must allow self');
+  assert.equal(pageResponse.status, 302);
+  assert.ok(!pageResponse.headers.get('Location').includes(maliciousTitle));
 });
 
 test('real HTTP device tunnel response with immutable fetch headers is proxied without 502 or TypeError', async () => {
@@ -821,6 +799,7 @@ test('device-reported enterprise mode controls login and the complete authorizat
           return {
             bind(...params) {
               return {
+                run: async () => ({}),
                 all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
                   ? [{ id: 'dev-ent', tunnel_url: tunnelUrl, is_online: 1 }] : [] }),
                 first: async () => {
@@ -862,62 +841,20 @@ test('device-reported enterprise mode controls login and the complete authorizat
       }
     };
 
-    // Стандартный режим устройства не показывает форму Enterprise.
+    // Оба режима используют одну и ту же защищённую передачу в панель.
     currentDeviceEnterpriseMode = 0;
     const stdDevRes = await proxyRouter.request('https://site.test/view/org/ws-ent/dash-ent', {
       headers: { Cookie: 'session=sess_test' }
     }, env);
-    assert.equal(stdDevRes.status, 200);
-    const stdDevHtml = await stdDevRes.text();
-    assert.ok(!stdDevHtml.includes('id="enterpriseLogin"'), 'Standard device must not show enterprise login');
-    assert.ok(stdDevHtml.includes('"enterprise_mode":false'), 'Must have enterprise_mode: false');
+    assert.equal(stdDevRes.status, 302);
 
     // Текущий Enterprise-режим устройства показывает форму входа.
     currentDeviceEnterpriseMode = 1;
     const entDevRes = await proxyRouter.request('https://site.test/view/org/ws-ent/dash-ent', {
       headers: { Cookie: 'session=sess_test' }
     }, env);
-    assert.equal(entDevRes.status, 200);
-    const entDevHtml = await entDevRes.text();
-    assert.ok(entDevHtml.includes('id="enterpriseLogin"'), 'Enterprise device must render enterprise login');
-    assert.ok(entDevHtml.includes('id="signIn"'), 'Enterprise device must render sign in button');
-    assert.ok(entDevHtml.includes('"enterprise_mode":true'), 'Must have enterprise_mode: true');
-
-    // 3. Language selection test
-    // 3a. Default language is Russian
-    assert.ok(entDevHtml.includes('Войти'), 'Default language should be ru');
-    assert.ok(entDevHtml.includes('lang="ru"'));
-
-    // 3b. Query param ?lang=en chooses English
-    const enQueryRes = await proxyRouter.request('https://site.test/view/org/ws-ent/dash-ent?lang=en', {
-      headers: { Cookie: 'session=sess_test' }
-    }, env);
-    assert.equal(enQueryRes.status, 200);
-    const enQueryHtml = await enQueryRes.text();
-    assert.ok(enQueryHtml.includes('Sign in'), 'English language must show English sign in button');
-    assert.ok(enQueryHtml.includes('placeholder="Login"'));
-    assert.ok(enQueryHtml.includes('lang="en"'));
-
-    // 3c. Accept-Language header chooses English when no query param
-    const enHeaderRes = await proxyRouter.request('https://site.test/view/org/ws-ent/dash-ent', {
-      headers: { Cookie: 'session=sess_test', 'Accept-Language': 'en-US,en;q=0.9' }
-    }, env);
-    assert.equal(enHeaderRes.status, 200);
-    const enHeaderHtml = await enHeaderRes.text();
-    assert.ok(enHeaderHtml.includes('Sign in'), 'Accept-Language: en must select English');
-
-    // 4. Asset versioning and immutable cache headers
-    const jsPathMatch = entDevHtml.match(/<script src="(\/operator-static\/operator\.[a-f0-9]+\.js)"><\/script>/);
-    assert.ok(jsPathMatch, 'Versioned script tag must exist');
-    const versionedJsRes = await proxyRouter.request(`https://site.test${jsPathMatch[1]}`, {}, env);
-    assert.equal(versionedJsRes.status, 200);
-    assert.equal(versionedJsRes.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
-
-    const cssPathMatch = entDevHtml.match(/<link rel="stylesheet" href="(\/operator-static\/operator\.[a-f0-9]+\.css)">/);
-    assert.ok(cssPathMatch, 'Versioned stylesheet tag must exist');
-    const versionedCssRes = await proxyRouter.request(`https://site.test${cssPathMatch[1]}`, {}, env);
-    assert.equal(versionedCssRes.status, 200);
-    assert.equal(versionedCssRes.headers.get('Cache-Control'), 'public, max-age=31536000, immutable');
+    assert.equal(entDevRes.status, 302);
+    assert.ok(entDevRes.headers.get('Location').includes('/panel/open?ticket='));
 
     // 3. Invalid login credentials sent to device tunnel
     const invalidLoginRes = await proxyRouter.request('https://site.test/operator/login', {
@@ -989,11 +926,12 @@ test('device-reported enterprise mode controls login and the complete authorizat
   }
 });
 
-test('dashboard probes a legacy backup device and pins operator requests to it', async () => {
+test('dashboard handoff probes a legacy backup device', async () => {
   const tunnelCalls = [];
   let legacyEnterprise = true;
   const env = {
     DB: { prepare(sql) { return { bind(...params) { return {
+      run: async () => ({}),
       all: async () => ({ results: sql.includes('SELECT id, tunnel_url, is_online FROM devices')
         ? [
           { id: 'linked-offline', tunnel_url: null, is_online: 0 },
@@ -1029,41 +967,12 @@ test('dashboard probes a legacy backup device and pins operator requests to it',
   const page = await proxyRouter.request('https://site.test/view/org/ws/dash-1', {
     headers: { Cookie: 'session=sess_test', 'Accept-Language': 'en;q=0,ru;q=1' }
   }, env);
-  assert.equal(page.status, 200);
-  const html = await page.text();
-  assert.ok(html.includes('id="enterpriseLogin"'));
-  assert.ok(html.includes('lang="ru"'));
-  assert.ok(html.includes('"dashboard_id":"dash-1"'));
-  const pinnedCookie = page.headers.getSetCookie().find(cookie =>
-    cookie.startsWith('operator_dev_dash-1='));
-  assert.ok(pinnedCookie?.includes('backup-enterprise'));
-
-  const beforeOperator = tunnelCalls.length;
-  const view = await proxyRouter.request('https://site.test/operator/view', {
-    headers: {
-      Cookie: `session=sess_test; ${pinnedCookie.split(';')[0]}`,
-      Referer: 'https://site.test/view/org/ws/dash-1'
-    }
-  }, env);
-  assert.equal(view.status, 200);
-  assert.deepEqual(await view.json(), { device: 'backup-enterprise' });
-  assert.deepEqual(tunnelCalls.slice(beforeOperator), [['backup-enterprise', '/operator/view']]);
-
-  const noReferer = await proxyRouter.request('https://site.test/operator/view?dash_id=dash-1', {
-    headers: { Cookie: `session=sess_test; ${pinnedCookie.split(';')[0]}` }
-  }, env);
-  assert.equal(noReferer.status, 200);
-  assert.deepEqual(await noReferer.json(), { device: 'backup-enterprise' });
-
-  legacyEnterprise = false;
-  const standardPage = await proxyRouter.request('https://site.test/view/org/ws/dash-1', {
-    headers: { Cookie: 'session=sess_test' }
-  }, env);
-  assert.equal(standardPage.status, 200);
-  assert.ok(!(await standardPage.text()).includes('id="enterpriseLogin"'));
+  assert.equal(page.status, 302);
+  assert.ok(tunnelCalls.some(([deviceId]) => deviceId === 'backup-enterprise'));
+  assert.ok(page.headers.get('Location').includes('/panel/open?ticket='));
 });
 
-test('offline dashboard shows a trusted localized page without guessing the login mode', async () => {
+test('offline dashboard does not issue a panel ticket', async () => {
   const env = { DB: { prepare(sql) { return { bind() { return {
     first: async () => sql.includes('FROM user_sessions') ? { id: 'user-1' }
       : sql.includes('FROM dashboards d') ? {
@@ -1076,9 +985,5 @@ test('offline dashboard shows a trusted localized page without guessing the logi
     headers: { Cookie: 'session=sess_test', 'Accept-Language': 'en-US,en;q=0.9' }
   }, env);
   assert.equal(page.status, 503);
-  assert.equal(page.headers.get('Content-Type'), 'text/html; charset=utf-8');
-  const html = await page.text();
-  assert.ok(html.includes('The device panel is unavailable'));
-  assert.ok(!html.includes('id="enterpriseLogin"'));
-  assert.ok(!html.includes('id="operatorConfig"'));
+  assert.equal(page.headers.get('Location'), null);
 });

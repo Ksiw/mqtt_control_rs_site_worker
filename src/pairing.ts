@@ -30,33 +30,6 @@ pairRouter.post('/request', async (c) => {
   const name = device_name?.trim() || 'Хост-программа';
   const cleanMachineId = machine_id?.trim() || null;
 
-  // Защита: проверяем, не привязан ли этот machine_id к другому владельцу
-  if (cleanMachineId) {
-    const existingBinding = await c.env.DB.prepare(`
-      SELECT d.id, u.email, o.name as org_name
-      FROM devices d
-      JOIN workspaces w ON d.workspace_id = w.id
-      JOIN organizations o ON w.org_id = o.id
-      JOIN users u ON o.owner_user_id = u.id
-      WHERE d.machine_id = ?
-      LIMIT 1
-    `).bind(cleanMachineId).first<{ id: string; email: string; org_name: string }>();
-
-    if (existingBinding) {
-      const parts = existingBinding.email.split('@');
-      const namePart = parts[0] || 'user';
-      const domainPart = parts[1] || 'mail.com';
-      const maskedEmail = namePart.length > 2
-        ? `${namePart[0]}***${namePart[namePart.length - 1]}@${domainPart}`
-        : `***@${domainPart}`;
-
-      return c.json({
-        status: 'error',
-        message: `Этот хост уже привязан к аккаунту ${maskedEmail}. Чтобы перенести его, сначала удалите хост в прежнем аккаунте.`
-      }, 409);
-    }
-  }
-
   // Код короткий для ручного ввода; при совпадении выбираем новый.
   const secretToken = `pair_sec_${crypto.randomUUID().replace(/-/g, '')}`;
   const now = Math.floor(Date.now() / 1000);

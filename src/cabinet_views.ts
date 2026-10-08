@@ -92,7 +92,7 @@ interface CabinetViewProps {
   daysLeft?: number;
   canTrial?: boolean;
   paymentNotification?: string;
-  planPrices?: { month: number; year: number };
+  planPrices?: { twoMonth: number; year: number };
 }
 
 export function renderCabinetHtml(props: CabinetViewProps): string {
@@ -184,7 +184,6 @@ export function renderCabinetHtml(props: CabinetViewProps): string {
         <div class="header-user">
           ${tierBadge}
           ${canTrial ? `<button type="button" onclick="activateTrial()" style="background:linear-gradient(135deg, #7c3aed, #4f46e5); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">✨ 60 дней Pro бесплатно</button>` : ''}
-          ${isOwner && planTier !== 'enterprise' ? `<button type="button" onclick="openProModal()" style="background:linear-gradient(135deg, #0284c7, #2563eb); color:#fff; border:none; padding:6px 14px; border-radius:6px; font-size:12px; font-weight:600; cursor:pointer;">${planTier === 'pro' && !isTrial ? '★ Продлить Pro' : '🔥 Оформить Pro'}</button>` : ''}
           <span class="user-email">${escapeHtml(user.name || user.email)}</span>
           <a href="/auth/logout" class="btn-logout">Выйти</a>
         </div>

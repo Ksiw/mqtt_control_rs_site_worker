@@ -99,11 +99,21 @@ pairingApprovalRouter.post('/approve', async (c) => {
   const effectiveTier = getEffectivePlanTier(orgMember.plan_tier, orgMember.status, orgMember.current_period_end, now);
   const maxDevs = getTierDeviceLimit(effectiveTier, orgMember.max_devices);
 
+  const sameMachineDev = pairing.machine_id ? await c.env.DB.prepare(`
+    SELECT d.id, d.name FROM devices d
+    JOIN workspaces w ON d.workspace_id = w.id
+    WHERE d.machine_id = ? AND w.org_id = ?
+    LIMIT 1
+  `).bind(pairing.machine_id, orgMember.org_id).first<{ id: string; name: string }>() : null;
+
   let successMsg = `Хост «${pairing.device_name}» успешно привязан к аккаунту!`;
   let oldDeviceIdToRecord: string | null = null;
   let startTrial = false;
 
-  if (count >= maxDevs) {
+  if (sameMachineDev) {
+    oldDeviceIdToRecord = sameMachineDev.id;
+    successMsg = `Привязка хоста «${pairing.device_name}» успешно обновлена!`;
+  } else if (count >= maxDevs) {
     if (action === 'transfer') {
       // Проверяем лимит переносов за 30 дней (максимум 4)
       const windowStart = now - (30 * 86400);
@@ -164,7 +174,14 @@ pairingApprovalRouter.post('/approve', async (c) => {
   // Заявка закрепляется за одним подтверждением. Проверка лимита и все
   // изменения выполняются в одной транзакции D1.
   let claim;
-  if (transfer) {
+  if (sameMachineDev) {
+    claim = c.env.DB.prepare(`
+      UPDATE device_pairings SET status = 'approved', device_key = ?, workspace_id = ?
+      WHERE code = ? AND status = 'pending' AND expires_at >= ?
+        AND EXISTS (SELECT 1 FROM devices d JOIN workspaces w ON w.id = d.workspace_id
+          WHERE d.id = ? AND w.org_id = ?)
+    `).bind(fullKey, workspace.id, code, now, oldDeviceIdToRecord, orgMember.org_id);
+  } else if (transfer) {
     claim = c.env.DB.prepare(`
       UPDATE device_pairings SET status = 'approved', device_key = ?, workspace_id = ?
       WHERE code = ? AND status = 'pending' AND expires_at >= ?
@@ -222,13 +239,15 @@ pairingApprovalRouter.post('/approve', async (c) => {
       DELETE FROM devices WHERE id = ?
         AND EXISTS (SELECT 1 FROM devices WHERE id = ?)
     `).bind(oldDeviceIdToRecord, devId));
-    const trId = `tr_${crypto.randomUUID().replace(/-/g, '')}`;
-    batchQueries.push(
-      c.env.DB.prepare(`
-        INSERT INTO host_transfers (id, org_id, old_device_id, new_device_id, transferred_at)
-        SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?)
-      `).bind(trId, orgMember.org_id, oldDeviceIdToRecord, devId, now, devId)
-    );
+    if (!sameMachineDev) {
+      const trId = `tr_${crypto.randomUUID().replace(/-/g, '')}`;
+      batchQueries.push(
+        c.env.DB.prepare(`
+          INSERT INTO host_transfers (id, org_id, old_device_id, new_device_id, transferred_at)
+          SELECT ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM devices WHERE id = ?)
+        `).bind(trId, orgMember.org_id, oldDeviceIdToRecord, devId, now, devId)
+      );
+    }
   }
 
   const changes = await c.env.DB.batch(batchQueries);

@@ -29,9 +29,9 @@ function runTests() {
   // Действует до 10 ноября, сегодня 1 ноября
   const nov10 = Math.floor(new Date('2026-11-10T12:00:00Z').getTime() / 1000);
   const nov01 = Math.floor(new Date('2026-11-01T12:00:00Z').getTime() / 1000);
-  const nextEnd = calculateNextPeriodEnd(nov10, 'pro', false, nov01);
+  const nextEnd = calculateNextPeriodEnd(nov10, 'pro', 2, nov01);
   const nextEndDate = new Date(nextEnd * 1000);
-  console.assert(nextEndDate.getUTCDate() === 10 && nextEndDate.getUTCMonth() === 11, `Ожидалось 10 декабря, получено: ${nextEndDate.toISOString()}`);
+  console.assert(nextEndDate.getUTCDate() === 10 && nextEndDate.getUTCMonth() === 0, `Ожидалось 10 января, получено: ${nextEndDate.toISOString()}`);
 
   console.log('Все календарные тесты успешно пройдены!');
 }

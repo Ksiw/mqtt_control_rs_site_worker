@@ -6,12 +6,17 @@ interface PendingRequest {
   timer: any;
 }
 
+interface ActiveStream {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+}
+
 export class DeviceTunnel {
   state: DurableObjectState;
   env: Env;
   deviceWs: WebSocket | null = null;
   operatorSockets: Set<WebSocket> = new Set();
   pendingRequests: Map<string, PendingRequest> = new Map();
+  activeStreams: Map<string, ActiveStream> = new Map();
 
   constructor(state: DurableObjectState, env: Env) {
     this.state = state;
@@ -113,6 +118,7 @@ export class DeviceTunnel {
     return new Promise<Response>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(reqId);
+        try { this.deviceWs?.send(JSON.stringify({ type: 'http_cancel', id: reqId })); } catch (_) {}
         resolve(new Response(JSON.stringify({ error: 'gateway_timeout', message: 'Хост-программа не ответила за 15 секунд' }), {
           status: 504,
           headers: { 'Content-Type': 'application/json' }
@@ -139,6 +145,7 @@ export class DeviceTunnel {
     ws.accept();
 
     if (this.deviceWs) {
+      this.failDeviceRequests();
       try {
         this.deviceWs.close(1000, 'Replaced by new connection');
       } catch (_) {}
@@ -160,6 +167,56 @@ export class DeviceTunnel {
               headers,
             }));
           }
+        } else if (msg.type === 'http_response_start' && msg.id) {
+          const pending = this.pendingRequests.get(msg.id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            this.pendingRequests.delete(msg.id);
+            const stream = new ReadableStream<Uint8Array>({
+              start: (controller) => {
+                this.activeStreams.set(msg.id, { controller });
+              },
+              cancel: () => {
+                this.activeStreams.delete(msg.id);
+                if (this.deviceWs === ws) {
+                  try { ws.send(JSON.stringify({ type: 'http_cancel', id: msg.id })); } catch (_) {}
+                }
+              },
+            });
+            const headers = new Headers(msg.headers || {});
+            for (const name of ['connection', 'content-length', 'keep-alive', 'te', 'trailer', 'transfer-encoding', 'upgrade']) {
+              headers.delete(name);
+            }
+            pending.resolve(new Response(stream, { status: msg.status || 200, headers }));
+          } else {
+            try { ws.send(JSON.stringify({ type: 'http_cancel', id: msg.id })); } catch (_) {}
+          }
+        } else if (msg.type === 'http_response_chunk' && msg.id) {
+          const active = this.activeStreams.get(msg.id);
+          if (active && typeof msg.data === 'string') {
+            if (active.controller.desiredSize !== null && active.controller.desiredSize < -64) {
+              this.activeStreams.delete(msg.id);
+              active.controller.error(new Error('Browser is not reading the device stream'));
+              try { ws.send(JSON.stringify({ type: 'http_cancel', id: msg.id })); } catch (_) {}
+              return;
+            }
+            try {
+              const decoded = atob(msg.data);
+              const bytes = Uint8Array.from(decoded, (char) => char.charCodeAt(0));
+              active.controller.enqueue(bytes);
+            } catch (_) {
+              this.activeStreams.delete(msg.id);
+              active.controller.error(new Error('Invalid device stream'));
+              try { ws.send(JSON.stringify({ type: 'http_cancel', id: msg.id })); } catch (_) {}
+            }
+          }
+        } else if (msg.type === 'http_response_end' && msg.id) {
+          const active = this.activeStreams.get(msg.id);
+          if (active) {
+            this.activeStreams.delete(msg.id);
+            if (msg.error) active.controller.error(new Error('Device stream failed'));
+            else active.controller.close();
+          }
         } else if (msg.type === 'ws_broadcast') {
           // Рассылка живых событий HMI всем открытым вкладкам операторов
           const dataStr = typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data);
@@ -179,19 +236,27 @@ export class DeviceTunnel {
     const cleanup = () => {
       if (this.deviceWs === ws) {
         this.deviceWs = null;
-        for (const [id, pending] of this.pendingRequests.entries()) {
-          clearTimeout(pending.timer);
-          pending.resolve(new Response(JSON.stringify({ error: 'device_disconnected' }), {
-            status: 503,
-            headers: { 'Content-Type': 'application/json' }
-          }));
-        }
-        this.pendingRequests.clear();
+        this.failDeviceRequests();
       }
     };
 
     ws.addEventListener('close', cleanup);
     ws.addEventListener('error', cleanup);
+  }
+
+  private failDeviceRequests() {
+    for (const pending of this.pendingRequests.values()) {
+      clearTimeout(pending.timer);
+      pending.resolve(new Response(JSON.stringify({ error: 'device_disconnected' }), {
+        status: 503,
+        headers: { 'Content-Type': 'application/json' }
+      }));
+    }
+    this.pendingRequests.clear();
+    for (const active of this.activeStreams.values()) {
+      active.controller.error(new Error('Device disconnected'));
+    }
+    this.activeStreams.clear();
   }
 
   private setupOperatorWebSocket(ws: WebSocket) {

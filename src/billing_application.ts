@@ -43,8 +43,13 @@ export async function applyFinishedPayment(
     const anchorDay = continuing && typeof savedAnchor === 'number' &&
       Number.isInteger(savedAnchor) && savedAnchor >= 1 && savedAnchor <= 31
       ? savedAnchor : new Date(baseTime * 1000).getUTCDate();
+    // Уже созданные месячные счета могут быть оплачены после смены тарифа.
+    const months = payment.duration_days === 30 ? 1
+      : payment.duration_days === 60 ? 2
+      : payment.duration_days === 365 ? 12 : null;
+    if (months === null) throw new Error('Unsupported payment duration');
     const nextEnd = calculateNextPeriodEnd(
-      subscription.current_period_end, activePlan, payment.duration_days >= 365, now, anchorDay
+      subscription.current_period_end, activePlan, months, now, anchorDay
     );
 
     // Пачка D1 атомарна. Второй запрос меняет платёж только если первый

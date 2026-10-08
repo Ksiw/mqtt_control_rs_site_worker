@@ -20,12 +20,12 @@ const { billingRouter } = await import(join(outputDir, 'billing.mjs'));
 const { calculateNextPeriodEnd } = await import(join(outputDir, 'calendar.mjs'));
 const { applyFinishedPayment } = await import(join(outputDir, 'billing_application.mjs'));
 
-test('monthly renewal keeps the original billing day after February', () => {
+test('two-month renewal keeps the original billing day', () => {
   const jan31 = Date.parse('2026-01-31T12:00:00Z') / 1000;
-  const feb28 = calculateNextPeriodEnd(0, 'free', false, jan31);
-  const mar31 = calculateNextPeriodEnd(feb28, 'pro', false, jan31 + 86400, 31);
-  assert.equal(new Date(feb28 * 1000).toISOString(), '2026-02-28T12:00:00.000Z');
+  const mar31 = calculateNextPeriodEnd(0, 'free', 2, jan31);
+  const may31 = calculateNextPeriodEnd(mar31, 'pro', 2, jan31 + 86400, 31);
   assert.equal(new Date(mar31 * 1000).toISOString(), '2026-03-31T12:00:00.000Z');
+  assert.equal(new Date(may31 * 1000).toISOString(), '2026-05-31T12:00:00.000Z');
 });
 
 test('payment application persists the original billing day', async () => {
@@ -42,7 +42,7 @@ test('payment application persists the original billing day', async () => {
     .get('sub-1');
   assert.equal(subscription.billing_anchor_day, 31);
   assert.equal(new Date(subscription.current_period_end * 1000).toISOString(),
-    '2026-03-31T12:00:00.000Z');
+    '2026-05-31T12:00:00.000Z');
 });
 
 test('billing migration applies after the existing schema', async () => {
@@ -159,7 +159,7 @@ function seedPayment(db, id, orderId, invoiceId = '1001', orgId = 'org-1') {
   db.sqlite.prepare(`
     INSERT INTO payments (id, org_id, user_id, order_id, invoice_id, amount_usd,
                           plan_tier, duration_days, payment_status, created_at, updated_at)
-    VALUES (?, ?, 'user-1', ?, ?, 12, 'pro', 30, 'waiting', 1, 1)
+    VALUES (?, ?, 'user-1', ?, ?, 20, 'pro', 60, 'waiting', 1, 1)
   `).run(id, orgId, orderId, invoiceId);
 }
 
@@ -175,9 +175,9 @@ function signedRequest(env, payload) {
 
 function notification(orderId, invoiceId, paymentId, overrides = {}) {
   return {
-    actually_paid: 12, invoice_id: invoiceId, order_id: orderId,
-    pay_amount: 12, pay_currency: 'usdttrc20', payment_id: paymentId,
-    payment_status: 'finished', price_amount: 12, price_currency: 'usd',
+    actually_paid: 20, invoice_id: invoiceId, order_id: orderId,
+    pay_amount: 20, pay_currency: 'usdttrc20', payment_id: paymentId,
+    payment_status: 'finished', price_amount: 20, price_currency: 'usd',
     ...overrides
   };
 }
@@ -209,6 +209,19 @@ test('only matching, fully paid, finished invoice grants Pro once', async () => 
     .get('pay-1').provider_payment_id, '9001');
 });
 
+test('an existing monthly invoice remains payable after the tariff change', async () => {
+  const { db, env, now } = fixture();
+  seedPayment(db, 'pay-1', 'order-1');
+  db.sqlite.prepare('UPDATE payments SET amount_usd = 12, duration_days = 30 WHERE id = ?')
+    .run('pay-1');
+  const oldInvoice = notification('order-1', '1001', 9001, {
+    actually_paid: 12, pay_amount: 12, price_amount: 12
+  });
+  assert.equal((await signedRequest(env, oldInvoice)).status, 200);
+  assert.ok(subscriptionEnd(db) > now + 27 * 86400);
+  assert.ok(subscriptionEnd(db) < now + 32 * 86400);
+});
+
 test('parallel notifications for different invoices preserve both paid periods', async () => {
   const { db, env } = fixture();
   seedPayment(db, 'pay-1', 'order-1', '1001');
@@ -229,9 +242,9 @@ test('parallel notifications for different invoices preserve both paid periods',
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM payments WHERE applied_at IS NOT NULL')
     .get().count, 2);
   const end = subscriptionEnd(db);
-  const firstMonth = new Date();
-  firstMonth.setUTCMonth(firstMonth.getUTCMonth() + 1);
-  assert.ok(end > Math.floor(firstMonth.getTime() / 1000));
+  const thirdMonth = new Date();
+  thirdMonth.setUTCMonth(thirdMonth.getUTCMonth() + 3);
+  assert.ok(end > Math.floor(thirdMonth.getTime() / 1000));
 });
 
 test('parallel retries for one invoice extend the subscription only once', async () => {
@@ -250,7 +263,7 @@ test('parallel retries for one invoice extend the subscription only once', async
   assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM payments WHERE applied_at IS NOT NULL')
     .get().count, 1);
   assert.ok(subscriptionEnd(db) > now);
-  assert.ok(subscriptionEnd(db) < now + 45 * 86400);
+  assert.ok(subscriptionEnd(db) < now + 75 * 86400);
 });
 
 test('one provider payment cannot activate two invoices', async () => {
@@ -371,8 +384,10 @@ test('invoice creation targets the displayed organization and uses unique order 
   const { db, env } = fixture();
   const originalFetch = globalThis.fetch;
   let invoice = 0;
+  const invoiceRequests = [];
   globalThis.fetch = async (_url, options) => {
     const request = JSON.parse(options.body);
+    invoiceRequests.push(request);
     invoice++;
     return new Response(JSON.stringify({
       id: invoice, order_id: request.order_id,
@@ -382,7 +397,7 @@ test('invoice creation targets the displayed organization and uses unique order 
   try {
     const create = () => billingRouter.request('https://site.test/create-invoice', {
       method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duration: 'month', org_id: 'org-2' })
+      body: JSON.stringify({ duration: 'two_months', org_id: 'org-2' })
     }, env);
     const responses = await Promise.all([create(), create()]);
     assert.deepEqual(responses.map(response => response.status), [200, 200]);
@@ -391,10 +406,29 @@ test('invoice creation targets the displayed organization and uses unique order 
     assert.equal(new Set(orders).size, 2);
     assert.equal(db.sqlite.prepare('SELECT COUNT(*) AS count FROM payments WHERE org_id = ?')
       .get('org-2').count, 2);
+    assert.deepEqual(db.sqlite.prepare('SELECT amount_usd, duration_days FROM payments WHERE org_id = ?')
+      .all('org-2').map(row => [row.amount_usd, row.duration_days]), [[20, 60], [20, 60]]);
+    assert.ok(invoiceRequests.every(request => request.price_amount === 20 &&
+      request.order_description.includes('2 месяца')));
+    const yearResponse = await billingRouter.request('https://site.test/create-invoice', {
+      method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration: 'year', org_id: 'org-2' })
+    }, env);
+    assert.equal(yearResponse.status, 200);
+    assert.equal(invoiceRequests[2].price_amount, 100);
+    assert.ok(invoiceRequests[2].order_description.includes('1 год'));
+    const yearPayment = db.sqlite.prepare('SELECT amount_usd, duration_days FROM payments WHERE order_id = ?')
+      .get((await yearResponse.json()).order_id);
+    assert.equal(yearPayment.amount_usd, 100);
+    assert.equal(yearPayment.duration_days, 365);
     assert.equal((await billingRouter.request('https://site.test/create-invoice', {
       method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duration: 'month' })
+      body: JSON.stringify({ duration: 'two_months' })
     }, env)).status, 403);
+    assert.equal((await billingRouter.request('https://site.test/create-invoice', {
+      method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duration: 'month', org_id: 'org-2' })
+    }, env)).status, 400);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -403,14 +437,14 @@ test('invoice creation targets the displayed organization and uses unique order 
 test('invalid configured price blocks invoice creation', async () => {
   const { db, env } = fixture();
   db.sqlite.prepare('INSERT INTO system_settings VALUES (?, ?)')
-    .run('price_month_usd', 'Infinity');
+    .run('price_two_month_usd', 'Infinity');
   const originalFetch = globalThis.fetch;
   let providerCalled = false;
   globalThis.fetch = async () => { providerCalled = true; throw new Error('unexpected provider call'); };
   try {
     const response = await billingRouter.request('https://site.test/create-invoice', {
       method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duration: 'month', org_id: 'org-1' })
+      body: JSON.stringify({ duration: 'two_months', org_id: 'org-1' })
     }, env);
     assert.equal(response.status, 503);
     assert.equal(providerCalled, false);
@@ -427,7 +461,7 @@ test('provider failure is recorded without leaking its response to the customer'
   try {
     const response = await billingRouter.request('https://site.test/create-invoice', {
       method: 'POST', headers: { Cookie: 'session=sess_test', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duration: 'month', org_id: 'org-1' })
+      body: JSON.stringify({ duration: 'two_months', org_id: 'org-1' })
     }, env);
     assert.equal(response.status, 502);
     assert.ok(!(await response.text()).includes('provider internal detail'));

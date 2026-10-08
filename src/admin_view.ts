@@ -1,10 +1,10 @@
 /**
  * HTML-разметка блока супер-администратора (управление лицензиями)
  */
-export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: number; year: number }): string {
+export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { twoMonth: number; year: number }): string {
   if (!isSuperAdmin) return '';
 
-  const curMonth = (planPrices?.month ?? 12.0).toFixed(2);
+  const curTwoMonth = (planPrices?.twoMonth ?? 20.0).toFixed(2);
   const curYear = (planPrices?.year ?? 100.0).toFixed(2);
 
   return `
@@ -21,8 +21,8 @@ export function renderAdminSection(isSuperAdmin: boolean, planPrices?: { month: 
       <div style="font-size: 14px; font-weight: 600; color: #f8fafc; margin-bottom: 12px;">Установка стоимости подписки Pro</div>
       <form id="pricingForm" onsubmit="submitAdminPricing(event)" style="display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;">
         <div style="width:160px;">
-          <label class="form-label" for="priceMonthInput">1 месяц ($ USD)</label>
-          <input id="priceMonthInput" class="form-input" type="number" step="0.5" min="1" value="${curMonth}" required />
+          <label class="form-label" for="priceTwoMonthInput">2 месяца ($ USD)</label>
+          <input id="priceTwoMonthInput" class="form-input" type="number" step="0.5" min="1" value="${curTwoMonth}" required />
         </div>
         <div style="width:160px;">
           <label class="form-label" for="priceYearInput">1 год ($ USD)</label>
@@ -385,7 +385,7 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
 
       async function submitAdminPricing(e) {
         e.preventDefault();
-        const month = parseFloat(document.getElementById('priceMonthInput').value);
+        const twoMonth = parseFloat(document.getElementById('priceTwoMonthInput').value);
         const year = parseFloat(document.getElementById('priceYearInput').value);
         const msgDiv = document.getElementById('pricingMsg');
         const btn = document.getElementById('priceSubmitBtn');
@@ -395,7 +395,7 @@ export function renderAdminScripts(isSuperAdmin: boolean): string {
           const res = await fetch('/api/v1/admin/pricing', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ month, year })
+            body: JSON.stringify({ twoMonth, year })
           });
           const data = await res.json();
           msgDiv.style.display = 'block';

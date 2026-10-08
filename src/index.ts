@@ -10,8 +10,17 @@ import { billingRouter } from './billing';
 import { adminRouter } from './admin';
 import { licenseApiRouter } from './license_api';
 import { wikiRouter } from './wiki';
+import { isPanelOrigin } from './operator/access';
 
 const app = new Hono<{ Bindings: Env }>();
+
+app.use('*', async (c, next) => {
+  if (isPanelOrigin(c) && !c.req.path.startsWith('/panel') &&
+      !c.req.path.startsWith('/operator/') &&
+      !c.req.path.startsWith('/api/v1/device/') &&
+      c.req.path !== '/api/v1/health') return c.notFound();
+  await next();
+});
 
 // Подключение подмодулей маршрутизации
 app.route('/auth', authRouter);
@@ -70,5 +79,8 @@ export default {
     // Удаляем завершённые и истёкшие запросы привязки вместе с выданными ключами.
     await env.DB.prepare('DELETE FROM device_pairings WHERE expires_at < ?')
       .bind(now - 86400).run();
+
+    await env.DB.prepare('DELETE FROM dashboard_access_tokens WHERE expires_at < ?')
+      .bind(now).run();
   }
 };

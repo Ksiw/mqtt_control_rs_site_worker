@@ -1,8 +1,8 @@
 /**
  * HTML-разметка диалоговых модальных окон личного кабинета
  */
-export function renderCabinetModals(planPrices?: { month: number; year: number }, canTrial?: boolean): string {
-  const pMonth = (planPrices?.month ?? 12.0).toFixed(2);
+export function renderCabinetModals(planPrices?: { twoMonth: number; year: number }, canTrial?: boolean): string {
+  const pTwoMonth = (planPrices?.twoMonth ?? 20.0).toFixed(2);
   const pYear = (planPrices?.year ?? 100.0).toFixed(2);
   return `
     <!-- Модальное окно приглашения пользователя -->
@@ -144,10 +144,10 @@ export function renderCabinetModals(planPrices?: { month: number; year: number }
         <div style="display:flex; flex-direction:column; gap:12px; margin-bottom: 20px;">
           <label style="display:flex; align-items:center; justify-content:space-between; background:#0f1217; border:1px solid #334155; padding:14px; border-radius:8px; cursor:pointer;">
             <div>
-              <input type="radio" name="pro_period" value="month" checked style="margin-right:8px;">
-              <span style="font-weight:600; color:#f8fafc;">1 месяц</span>
+              <input type="radio" name="pro_period" value="two_months" checked style="margin-right:8px;">
+              <span style="font-weight:600; color:#f8fafc;">2 месяца</span>
             </div>
-            <span style="font-weight:700; color:#38bdf8;">$${pMonth}</span>
+            <span style="font-weight:700; color:#38bdf8;">$${pTwoMonth}</span>
           </label>
 
           <label style="display:flex; align-items:center; justify-content:space-between; background:#0f1217; border:1px solid #0284c7; padding:14px; border-radius:8px; cursor:pointer;">
