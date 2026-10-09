@@ -67,7 +67,7 @@ test('operator route ignores a foreign device ID supplied in a cookie', async ()
     }
   };
   const response = await proxyRouter.request('https://site.test/operator/command', {
-    headers: { Cookie: 'session=sess_test; last_ws_id=ws-own; last_dev_id=dev-foreign; operator_theme=dark' }
+    headers: { Cookie: 'session=sess_test; last_ws_id=ws-own; last_dev_id=dev-foreign; oauth_state_123=secret; oauth_return_123=%2Fcabinet; operator_theme=dark' }
   }, env);
   assert.equal(response.status, 200);
   assert.deepEqual(tunnelNames, ['ws-own']);
@@ -534,12 +534,12 @@ test('Google login returns to an allowed wiki or dashboard path', async () => {
   );
   const accepted = await request('/en/wiki#article=brokers');
   assert.equal(accepted.status, 302);
-  assert.ok(accepted.headers.get('set-cookie').includes('oauth_return=%2Fen%2Fwiki%23article%3Dbrokers'));
+  assert.match(accepted.headers.get('set-cookie'), /oauth_return_[a-f0-9]{32}=%2Fen%2Fwiki%23article%3Dbrokers/);
   const dashboard = await request('/view/device/mcrs_live_abcdef/7');
-  assert.ok(dashboard.headers.get('set-cookie').includes('oauth_return=%2Fview%2Fdevice%2Fmcrs_live_abcdef%2F7'));
+  assert.match(dashboard.headers.get('set-cookie'), /oauth_return_[a-f0-9]{32}=%2Fview%2Fdevice%2Fmcrs_live_abcdef%2F7/);
   const rejected = await request('https://attacker.example/');
   assert.equal(rejected.status, 302);
-  assert.ok(rejected.headers.get('set-cookie').includes('oauth_return=%2Fcabinet'));
+  assert.match(rejected.headers.get('set-cookie'), /oauth_return_[a-f0-9]{32}=%2Fcabinet/);
 });
 
 test('OAuth state requires the original browser cookie with or without a server secret', async () => {
@@ -556,6 +556,34 @@ test('OAuth state requires the original browser cookie with or without a server 
       `https://site.test/callback?code=fake&state=${state}`,
       { method: 'GET', headers: { Cookie: 'oauth_state=other-browser' } }, env
     )).status, 400);
+  }
+});
+
+test('a second Google login does not invalidate the first OAuth state', async () => {
+  const env = { GOOGLE_CLIENT_ID: 'test-client-id', GOOGLE_CLIENT_SECRET: 'test-secret',
+    HUB_DOMAIN: 'https://site.test' };
+  const start = await authRouter.request('https://site.test/google', {}, env);
+  const otherStart = await authRouter.request('https://site.test/google', {}, env);
+  const state = new URL(start.headers.get('location')).searchParams.get('state');
+  const otherState = new URL(otherStart.headers.get('location')).searchParams.get('state');
+  assert.notEqual(state, otherState);
+  const cookies = [...start.headers.getSetCookie(), ...otherStart.headers.getSetCookie()]
+    .map(cookie => cookie.split(';', 1)[0]).join('; ');
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response('', { status: 400 });
+  try {
+    const callback = await authRouter.request(
+      `https://site.test/callback?code=fake&state=${state}`,
+      { headers: { Cookie: cookies } }, env
+    );
+    assert.equal(await callback.text(), 'Не удалось получить токен доступа от Google');
+    const otherCallback = await authRouter.request(
+      `https://site.test/callback?code=fake&state=${otherState}`,
+      { headers: { Cookie: cookies } }, env
+    );
+    assert.equal(await otherCallback.text(), 'Не удалось получить токен доступа от Google');
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

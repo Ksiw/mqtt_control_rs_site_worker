@@ -22,8 +22,8 @@ authRouter.get('/google', async (c) => {
   const nonce = crypto.randomUUID().replace(/-/g, '');
   const state = nonce;
 
-  // Сохраняем state в cookie на 15 минут
-  setCookie(c, 'oauth_state', state, {
+  // Отдельная cookie для каждой попытки: второй вход не отменяет первый.
+  setCookie(c, `oauth_state_${state}`, state, {
     path: '/',
     secure: true,
     httpOnly: true,
@@ -32,9 +32,10 @@ authRouter.get('/google', async (c) => {
   });
   const requestedReturn = c.req.query('return') || getCookie(c, 'dashboard_return') || '';
   const returnTo = safeAuthReturn(requestedReturn) || '/cabinet';
-  setCookie(c, 'oauth_return', returnTo, {
+  setCookie(c, `oauth_return_${state}`, returnTo, {
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 900
   });
+  c.header('Cache-Control', 'no-store');
 
   const googleAuthUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   googleAuthUrl.searchParams.set('client_id', clientId);
@@ -52,14 +53,17 @@ authRouter.get('/google', async (c) => {
  * GET /auth/callback
  */
 authRouter.get('/callback', async (c) => {
+  c.header('Cache-Control', 'no-store');
+  c.header('Referrer-Policy', 'no-referrer');
   const code = c.req.query('code');
   const state = c.req.query('state');
-  const savedState = getCookie(c, 'oauth_state');
+  const validState = state && /^[a-f0-9]{32}$/.test(state);
+  const savedState = validState ? getCookie(c, `oauth_state_${state}`) : undefined;
+  const previousState = getCookie(c, 'oauth_state');
 
-  if (!code || !state || !savedState || state !== savedState) {
+  if (!code || !validState || (savedState !== state && previousState !== state)) {
     return c.text('Ошибка проверки безопасности OAuth (неверный параметр state)', 400);
   }
-
   const clientId = c.env.GOOGLE_CLIENT_ID;
   const clientSecret = c.env.GOOGLE_CLIENT_SECRET;
   if (!clientId || !clientSecret) {
@@ -121,8 +125,10 @@ authRouter.get('/callback', async (c) => {
   setCookie(c, 'session', sessionToken, {
     path: '/', secure: true, httpOnly: true, sameSite: 'Lax', maxAge: 30 * 86400
   });
+  deleteCookie(c, `oauth_state_${state}`);
   deleteCookie(c, 'oauth_state');
-  const returnTo = getCookie(c, 'oauth_return') || '/cabinet';
+  const returnTo = getCookie(c, `oauth_return_${state}`) || getCookie(c, 'oauth_return') || '/cabinet';
+  deleteCookie(c, `oauth_return_${state}`);
   deleteCookie(c, 'oauth_return');
   deleteCookie(c, 'dashboard_return');
   return c.redirect(safeAuthReturn(returnTo) || '/cabinet');
