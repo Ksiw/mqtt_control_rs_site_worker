@@ -146,13 +146,22 @@ export async function createUserSession(db: D1Database, profile: {
   const emailOwner = await db.prepare(
     'SELECT id, google_id FROM users WHERE lower(email) = ? LIMIT 1'
   ).bind(email).first<{ id: string; google_id: string }>();
+  let userId = existingUser?.id;
   if (emailOwner && emailOwner.google_id !== profile.id) {
-    throw new AccountIdentityConflictError('Email belongs to another Google account');
+    if (emailOwner.google_id !== 'google_admin' || existingUser) {
+      throw new AccountIdentityConflictError('Email belongs to another Google account');
+    }
+    // Старую запись с заглушкой привязываем только по подтверждённому Google-адресу.
+    const linked = await db.prepare(`
+      UPDATE users SET google_id = ?
+      WHERE id = ? AND google_id = 'google_admin' AND lower(email) = ?
+      RETURNING id
+    `).bind(profile.id, emailOwner.id, email).first<{ id: string }>();
+    if (!linked) throw new AccountIdentityConflictError('Email belongs to another Google account');
+    userId = linked.id;
   }
 
-  let userId = existingUser?.id;
-
-  if (!existingUser) {
+  if (!userId) {
     userId = `usr_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const orgId = `org_${crypto.randomUUID().replace(/-/g, '').substring(0, 12)}`;
     const slugBase = email.split('@')[0].replace(/[^a-z0-9]/g, '') || 'user';

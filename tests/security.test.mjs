@@ -573,6 +573,29 @@ test('a different Google account cannot inherit an existing account by email', a
   assert.ok(statements.every(sql => sql.startsWith('SELECT')));
 });
 
+test('verified Google identity replaces the single legacy placeholder without creating a new user', async () => {
+  const queries = [];
+  const db = { prepare(sql) { return { bind(...params) {
+    queries.push({ sql, params });
+    return {
+      first: async () => sql.includes('WHERE google_id = ? LIMIT 1') ? null
+        : sql.includes('WHERE lower(email) = ? LIMIT 1')
+          ? { id: 'legacy-user', google_id: 'google_admin' }
+          : sql.includes('RETURNING id') ? { id: 'legacy-user' } : null,
+      all: async () => ({ results: [] }),
+      run: async () => ({ success: true })
+    };
+  } }; } };
+  const token = await createUserSession(db, {
+    id: 'real-google-sub', email: 'USER@example.org'
+  });
+  assert.match(token, /^sess_/);
+  const relink = queries.find(query => query.sql.includes("google_id = 'google_admin'"));
+  assert.deepEqual(relink.params, ['real-google-sub', 'legacy-user', 'user@example.org']);
+  assert.ok(queries.some(query => query.sql.includes('UPDATE users SET email = ?')));
+  assert.ok(queries.every(query => !query.sql.includes('INSERT INTO users')));
+});
+
 test('browser Google login rejects an unverified email address', async () => {
   const env = { GOOGLE_CLIENT_ID: 'test-client-id', GOOGLE_CLIENT_SECRET: 'test-secret',
     HUB_DOMAIN: 'https://site.test' };
